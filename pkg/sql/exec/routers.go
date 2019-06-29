@@ -1,14 +1,12 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package exec
 
@@ -16,6 +14,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/cockroachdb/cockroach/pkg/sql/distsqlpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/exec/coldata"
 	"github.com/cockroachdb/cockroach/pkg/sql/exec/types"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
@@ -195,7 +194,15 @@ func (o *routerOutputOp) addBatch(batch coldata.Batch, selection []uint16) bool 
 		}
 
 		for i, t := range o.types {
-			dst.ColVec(i).AppendWithSel(batch.ColVec(i), selection, numAppended, t, uint64(dst.Length()))
+			dst.ColVec(i).Append(
+				coldata.AppendArgs{
+					ColType:   t,
+					Src:       batch.ColVec(i),
+					Sel:       selection,
+					DestIdx:   uint64(dst.Length()),
+					SrcEndIdx: uint16(len(selection)),
+				},
+			)
 		}
 
 		selection = selection[numAppended:]
@@ -233,7 +240,10 @@ func (o *routerOutputOp) reset() {
 	o.mu.Unlock()
 }
 
-type hashRouter struct {
+// HashRouter hashes values according to provided hash columns and computes a
+// destination for each row. These destinations are exposed as Operators
+// returned by the constructor.
+type HashRouter struct {
 	input Operator
 	// types are the input types.
 	types []types.T
@@ -246,11 +256,13 @@ type hashRouter struct {
 	// One output for each stream.
 	outputs []routerOutput
 
-	// unblockedEventsChan is a channel shared between the hashRouter and its
+	// unblockedEventsChan is a channel shared between the HashRouter and its
 	// outputs. outputs send events on this channel when they are unblocked by a
 	// read.
 	unblockedEventsChan <-chan struct{}
 	numBlockedOutputs   int
+
+	bufferedMeta []distsqlpb.ProducerMetadata
 
 	scratch struct {
 		// buckets is scratch space for the computed hash value of a group of columns
@@ -261,12 +273,12 @@ type hashRouter struct {
 	}
 }
 
-// newHashRouter creates a new hash router that consumes coldata.Batches from
+// NewHashRouter creates a new hash router that consumes coldata.Batches from
 // input and hashes each row according to hashCols to one of numOutputs outputs.
 // These outputs are exposed as Operators.
-func newHashRouter(
+func NewHashRouter(
 	input Operator, types []types.T, hashCols []int, numOutputs int,
-) (*hashRouter, []Operator) {
+) (*HashRouter, []Operator) {
 	outputs := make([]routerOutput, numOutputs)
 	outputsAsOps := make([]Operator, numOutputs)
 	// unblockEventsChan is buffered to 2*numOutputs as we don't want the outputs
@@ -274,7 +286,7 @@ func newHashRouter(
 	// Unblock events only happen after a corresponding block event. Since these
 	// are state changes and are done under lock (including the output sending
 	// on the channel, which is why we want the channel to be buffered in the
-	// first place), every time the hashRouter blocks an output, it *must* read
+	// first place), every time the HashRouter blocks an output, it *must* read
 	// all unblock events preceding it since these *must* be on the channel.
 	unblockEventsChan := make(chan struct{}, 2*numOutputs)
 	for i := 0; i < numOutputs; i++ {
@@ -291,8 +303,8 @@ func newHashRouterWithOutputs(
 	hashCols []int,
 	unblockEventsChan <-chan struct{},
 	outputs []routerOutput,
-) *hashRouter {
-	r := &hashRouter{
+) *HashRouter {
+	r := &HashRouter{
 		input:               input,
 		types:               types,
 		hashCols:            hashCols,
@@ -307,9 +319,13 @@ func newHashRouterWithOutputs(
 	return r
 }
 
-func (r *hashRouter) run(ctx context.Context) {
+// Run runs the HashRouter. Batches are read from the input and pushed to an
+// output calculated by hashing columns. Cancel the given context to terminate
+// early.
+func (r *HashRouter) Run(ctx context.Context) {
 	r.input.Init()
-	cancelOutputs := func() {
+	cancelOutputs := func(err error) {
+		r.bufferedMeta = append(r.bufferedMeta, distsqlpb.ProducerMetadata{Err: err})
 		for _, o := range r.outputs {
 			o.cancel()
 		}
@@ -318,7 +334,7 @@ func (r *hashRouter) run(ctx context.Context) {
 		// Check for cancellation.
 		select {
 		case <-ctx.Done():
-			cancelOutputs()
+			cancelOutputs(ctx.Err())
 			return
 		default:
 		}
@@ -341,7 +357,7 @@ func (r *hashRouter) run(ctx context.Context) {
 			case <-r.unblockedEventsChan:
 				r.numBlockedOutputs--
 			case <-ctx.Done():
-				cancelOutputs()
+				cancelOutputs(ctx.Err())
 				return
 			}
 		}
@@ -350,9 +366,7 @@ func (r *hashRouter) run(ctx context.Context) {
 		if err := CatchVectorizedRuntimeError(func() {
 			done = r.processNextBatch(ctx)
 		}); err != nil {
-			// TODO(asubiotto): Propagate this error through metadata. Think about
-			// semantics.
-			cancelOutputs()
+			cancelOutputs(err)
 			return
 		}
 		if done {
@@ -365,7 +379,7 @@ func (r *hashRouter) run(ctx context.Context) {
 
 // processNextBatch reads the next batch from its input, hashes it and adds each
 // column to its corresponding output, returning whether the input is done.
-func (r *hashRouter) processNextBatch(ctx context.Context) bool {
+func (r *HashRouter) processNextBatch(ctx context.Context) bool {
 	r.ht.initHash(r.scratch.buckets, uint64(len(r.scratch.buckets)))
 	b := r.input.Next(ctx)
 	if b.Length() == 0 {
@@ -412,8 +426,8 @@ func (r *hashRouter) processNextBatch(ctx context.Context) bool {
 	return false
 }
 
-// reset resets the hashRouter for a benchmark run.
-func (r *hashRouter) reset() {
+// reset resets the HashRouter for a benchmark run.
+func (r *HashRouter) reset() {
 	if i, ok := r.input.(resetter); ok {
 		i.reset()
 	}
@@ -428,4 +442,11 @@ func (r *hashRouter) reset() {
 	for _, o := range r.outputs {
 		o.(resetter).reset()
 	}
+}
+
+// DrainMeta is part of the MetadataGenerator interface.
+func (r *HashRouter) DrainMeta(ctx context.Context) []distsqlpb.ProducerMetadata {
+	meta := r.bufferedMeta
+	r.bufferedMeta = r.bufferedMeta[:0]
+	return meta
 }

@@ -1,14 +1,12 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package main
 
@@ -67,33 +65,34 @@ destroy the cluster.
 }
 
 var (
-	numNodes       int
-	numRacks       int
-	username       string
-	dryrun         bool
-	extendLifetime time.Duration
-	listDetails    bool
-	listJSON       bool
-	listMine       bool
-	clusterType    = "cockroach"
-	secure         = false
-	nodeEnv        = "COCKROACH_ENABLE_RPC_COMPRESSION=false"
-	nodeArgs       []string
-	tag            string
-	external       = false
-	adminurlOpen   = false
-	adminurlPath   = ""
-	adminurlIPs    = false
-	useTreeDist    = true
-	encrypt        = false
-	quiet          = false
-	sig            = 9
-	waitFlag       = false
-	logsDir        string
-	logsFilter     string
-	logsFrom       time.Time
-	logsTo         time.Time
-	logsInterval   time.Duration
+	numNodes          int
+	numRacks          int
+	username          string
+	dryrun            bool
+	extendLifetime    time.Duration
+	wipePreserveCerts bool
+	listDetails       bool
+	listJSON          bool
+	listMine          bool
+	clusterType       = "cockroach"
+	secure            = false
+	nodeEnv           = "COCKROACH_ENABLE_RPC_COMPRESSION=false"
+	nodeArgs          []string
+	tag               string
+	external          = false
+	adminurlOpen      = false
+	adminurlPath      = ""
+	adminurlIPs       = false
+	useTreeDist       = true
+	encrypt           = false
+	quiet             = false
+	sig               = 9
+	waitFlag          = false
+	logsDir           string
+	logsFilter        string
+	logsFrom          time.Time
+	logsTo            time.Time
+	logsInterval      time.Duration
 
 	monitorIgnoreEmptyNodes bool
 	monitorOneShot          bool
@@ -110,7 +109,7 @@ func sortedClusters() []string {
 	return r
 }
 
-func newCluster(name string, reserveLoadGen bool) (*install.SyncedCluster, error) {
+func newCluster(name string) (*install.SyncedCluster, error) {
 	nodeNames := "all"
 	{
 		parts := strings.Split(name, ":")
@@ -173,13 +172,6 @@ Hint: use "roachprod sync" to update the list of available clusters.
 		}
 	}
 	c.Nodes = nodes
-	if reserveLoadGen {
-		// TODO(marc): make loadgen node configurable. For now, we always use the
-		// last ID (1-indexed).
-		c.LoadGen = len(c.VMs)
-	} else {
-		c.LoadGen = -1
-	}
 	c.Secure = secure
 	c.Env = nodeEnv
 	c.Args = nodeArgs
@@ -436,7 +428,7 @@ func setupSSH(clusterName string) error {
 	if err := loadClusters(); err != nil {
 		return err
 	}
-	installCluster, err := newCluster(clusterName, false)
+	installCluster, err := newCluster(clusterName)
 	if err != nil {
 		return err
 	}
@@ -503,11 +495,11 @@ directory is removed.
 				if _, ok := install.Clusters[clusterName]; !ok {
 					return fmt.Errorf("cluster %s does not exist", clusterName)
 				}
-				c, err := newCluster(clusterName, false /* reserveLoadGen */)
+				c, err := newCluster(clusterName)
 				if err != nil {
 					return err
 				}
-				c.Wipe()
+				c.Wipe(false)
 				for _, i := range c.Nodes {
 					err := os.RemoveAll(fmt.Sprintf(os.ExpandEnv("${HOME}/local/%d"), i))
 					if err != nil {
@@ -917,7 +909,7 @@ cluster setting will be set to its value.
 `,
 	Args: cobra.ExactArgs(1),
 	Run: wrap(func(cmd *cobra.Command, args []string) error {
-		c, err := newCluster(args[0], false /* reserveLoadGen */)
+		c, err := newCluster(args[0])
 		if err != nil {
 			return err
 		}
@@ -948,7 +940,7 @@ other signals.
 `,
 	Args: cobra.ExactArgs(1),
 	Run: wrap(func(cmd *cobra.Command, args []string) error {
-		c, err := newCluster(args[0], false /* reserveLoadGen */)
+		c, err := newCluster(args[0])
 		if err != nil {
 			return err
 		}
@@ -977,7 +969,7 @@ The "status" command outputs the binary and PID for the specified nodes:
 `,
 	Args: cobra.ExactArgs(1),
 	Run: wrap(func(cmd *cobra.Command, args []string) error {
-		c, err := newCluster(args[0], false /* reserveLoadGen */)
+		c, err := newCluster(args[0])
 		if err != nil {
 			return err
 		}
@@ -997,7 +989,7 @@ into a single stream.
 `,
 	Args: cobra.RangeArgs(1, 2),
 	Run: wrap(func(cmd *cobra.Command, args []string) error {
-		c, err := newCluster(args[0], false /* reserveLoadGen */)
+		c, err := newCluster(args[0])
 		if err != nil {
 			return err
 		}
@@ -1030,7 +1022,7 @@ of nodes, outputting a line whenever a change is detected:
 `,
 	Args: cobra.ExactArgs(1),
 	Run: wrap(func(cmd *cobra.Command, args []string) error {
-		c, err := newCluster(args[0], false /* reserveLoadGen */)
+		c, err := newCluster(args[0])
 		if err != nil {
 			return err
 		}
@@ -1063,11 +1055,11 @@ nodes.
 `,
 	Args: cobra.ExactArgs(1),
 	Run: wrap(func(cmd *cobra.Command, args []string) error {
-		c, err := newCluster(args[0], false /* reserveLoadGen */)
+		c, err := newCluster(args[0])
 		if err != nil {
 			return err
 		}
-		c.Wipe()
+		c.Wipe(wipePreserveCerts)
 		return nil
 	}),
 }
@@ -1098,7 +1090,7 @@ the 'zfs rollback' command:
 
 	Args: cobra.ExactArgs(2),
 	Run: wrap(func(cmd *cobra.Command, args []string) error {
-		c, err := newCluster(args[0], false /* reserveLoadGen */)
+		c, err := newCluster(args[0])
 		if err != nil {
 			return err
 		}
@@ -1142,7 +1134,7 @@ var runCmd = &cobra.Command{
 `,
 	Args: cobra.MinimumNArgs(1),
 	Run: wrap(func(_ *cobra.Command, args []string) error {
-		c, err := newCluster(args[0], false /* reserveLoadGen */)
+		c, err := newCluster(args[0])
 		if err != nil {
 			return err
 		}
@@ -1162,31 +1154,6 @@ var runCmd = &cobra.Command{
 	}),
 }
 
-var testCmd = &cobra.Command{
-	Use:   "test <cluster> <name>...",
-	Short: "run one or more tests on a cluster",
-	Long: `Run one or more tests on a cluster. The test <name> must be one of:
-
-    ` + strings.Join(allTests(), "\n    ") + `
-
-Alternately, an interrupted test can be resumed by specifying the output
-directory of a previous test. For example:
-
-	roachprod test denim kv_0.cockroach-6151ae1
-
-will restart the kv_0 test on denim using the cockroach binary with the build
-tag 6151ae1.`,
-	Args: cobra.MinimumNArgs(2),
-	Run: wrap(func(cmd *cobra.Command, args []string) error {
-		for _, arg := range args[1:] {
-			if err := runTest(arg, args[0]); err != nil {
-				return err
-			}
-		}
-		return nil
-	}),
-}
-
 var installCmd = &cobra.Command{
 	Use:   "install <cluster> <software>",
 	Short: "install 3rd party software",
@@ -1196,7 +1163,7 @@ var installCmd = &cobra.Command{
 `,
 	Args: cobra.MinimumNArgs(2),
 	Run: wrap(func(cmd *cobra.Command, args []string) error {
-		c, err := newCluster(args[0], false /* reserveLoadGen */)
+		c, err := newCluster(args[0])
 		if err != nil {
 			return err
 		}
@@ -1228,7 +1195,7 @@ Some examples of usage:
 `,
 	Args: cobra.RangeArgs(2, 3),
 	Run: wrap(func(cmd *cobra.Command, args []string) error {
-		c, err := newCluster(args[0], false /* reserveLoadGen */)
+		c, err := newCluster(args[0])
 		if err != nil {
 			return err
 		}
@@ -1255,6 +1222,25 @@ Some examples of usage:
 	}),
 }
 
+var distributeCertsCmd = &cobra.Command{
+	Use:   "distribute-certs <cluster>",
+	Short: "distribute certificates to the nodes in a cluster",
+	Long: `Distribute certificates to the nodes in a cluster.
+If the certificates already exist, no action is taken. Note that this command is
+invoked automatically when a secure cluster is bootstrapped by "roachprod
+start."
+`,
+	Args: cobra.ExactArgs(1),
+	Run: wrap(func(cmd *cobra.Command, args []string) error {
+		c, err := newCluster(args[0])
+		if err != nil {
+			return err
+		}
+		c.DistributeCerts()
+		return nil
+	}),
+}
+
 var putCmd = &cobra.Command{
 	Use:   "put <cluster> <src> [<dest>]",
 	Short: "copy a local file to the nodes in a cluster",
@@ -1267,7 +1253,7 @@ var putCmd = &cobra.Command{
 		if len(args) == 3 {
 			dest = args[2]
 		}
-		c, err := newCluster(args[0], false /* reserveLoadGen */)
+		c, err := newCluster(args[0])
 		if err != nil {
 			return err
 		}
@@ -1289,7 +1275,7 @@ multiple nodes the destination file name will be prefixed with the node number.
 		if len(args) == 3 {
 			dest = args[2]
 		}
-		c, err := newCluster(args[0], false /* reserveLoadGen */)
+		c, err := newCluster(args[0])
 		if err != nil {
 			return err
 		}
@@ -1304,7 +1290,7 @@ var sqlCmd = &cobra.Command{
 	Long:  "Run `cockroach sql` on a remote cluster.\n",
 	Args:  cobra.MinimumNArgs(1),
 	Run: wrap(func(cmd *cobra.Command, args []string) error {
-		c, err := newCluster(args[0], false /* reserveLoadGen */)
+		c, err := newCluster(args[0])
 		if err != nil {
 			return err
 		}
@@ -1323,7 +1309,7 @@ var pgurlCmd = &cobra.Command{
 `,
 	Args: cobra.ExactArgs(1),
 	Run: wrap(func(cmd *cobra.Command, args []string) error {
-		c, err := newCluster(args[0], false /* reserveLoadGen */)
+		c, err := newCluster(args[0])
 		if err != nil {
 			return err
 		}
@@ -1359,7 +1345,7 @@ var adminurlCmd = &cobra.Command{
 `,
 	Args: cobra.ExactArgs(1),
 	Run: wrap(func(cmd *cobra.Command, args []string) error {
-		c, err := newCluster(args[0], false /* reserveLoadGen */)
+		c, err := newCluster(args[0])
 		if err != nil {
 			return err
 		}
@@ -1406,7 +1392,7 @@ var ipCmd = &cobra.Command{
 `,
 	Args: cobra.ExactArgs(1),
 	Run: wrap(func(cmd *cobra.Command, args []string) error {
-		c, err := newCluster(args[0], false /* reserveLoadGen */)
+		c, err := newCluster(args[0])
 		if err != nil {
 			return err
 		}
@@ -1433,34 +1419,6 @@ var ipCmd = &cobra.Command{
 	}),
 }
 
-var webCmd = &cobra.Command{
-	Use:   "web <testdir> [<testdir>]",
-	Short: "visualize and compare test output",
-	Long: `Visualize test output.
-
-The "web" command can visualize the output of a single test or compare the
-output of two or more tests.
-`,
-	Args: cobra.MinimumNArgs(1),
-	Run: wrap(func(cmd *cobra.Command, args []string) error {
-		return web(args)
-	}),
-}
-
-var dumpCmd = &cobra.Command{
-	Use:   "dump <testdir> [<testdir>]",
-	Short: "dump test output",
-	Long: `Display test output.
-
-The "dump" command can display the output of a single test or compare the
-output of two tests.
-`,
-	Args: cobra.RangeArgs(1, 2),
-	Run: wrap(func(cmd *cobra.Command, args []string) error {
-		return dump(args)
-	}),
-}
-
 func main() {
 	// The commands are displayed in the order they are added to rootCmd. Note
 	// that gcCmd and adminurlCmd contain a trailing \n in their Short help in
@@ -1482,8 +1440,8 @@ func main() {
 		runCmd,
 		wipeCmd,
 		reformatCmd,
-		testCmd,
 		installCmd,
+		distributeCertsCmd,
 		putCmd,
 		getCmd,
 		stageCmd,
@@ -1493,8 +1451,6 @@ func main() {
 		adminurlCmd,
 		logsCmd,
 
-		webCmd,
-		dumpCmd,
 		cachedHostsCmd,
 	)
 	rootCmd.BashCompletionFunction = fmt.Sprintf(`__custom_func()
@@ -1522,7 +1478,7 @@ func main() {
 				s = append(s, fmt.Sprintf("%s_%s", rootCmd.Name(), cmd.Name()))
 			}
 			return s
-		}(createCmd, listCmd, syncCmd, gcCmd, webCmd, dumpCmd), " | "),
+		}(createCmd, listCmd, syncCmd, gcCmd), " | "),
 	)
 
 	rootCmd.PersistentFlags().BoolVarP(
@@ -1534,7 +1490,7 @@ func main() {
 	}
 
 	for _, cmd := range []*cobra.Command{statusCmd, monitorCmd, startCmd,
-		stopCmd, runCmd, wipeCmd, reformatCmd, testCmd, installCmd, putCmd, getCmd,
+		stopCmd, runCmd, wipeCmd, reformatCmd, installCmd, putCmd, getCmd,
 		sqlCmd, pgurlCmd, adminurlCmd, ipCmd,
 	} {
 		cmd.Flags().BoolVar(
@@ -1606,10 +1562,7 @@ func main() {
 	stopCmd.Flags().IntVar(&sig, "sig", sig, "signal to pass to kill")
 	stopCmd.Flags().BoolVar(&waitFlag, "wait", waitFlag, "wait for processes to exit")
 
-	testCmd.Flags().DurationVarP(
-		&duration, "duration", "d", 5*time.Minute, "the duration to run each test")
-	testCmd.Flags().StringVarP(
-		&concurrency, "concurrency", "c", "1-64", "the concurrency to run each test")
+	wipeCmd.Flags().BoolVar(&wipePreserveCerts, "preserve-certs", false, "do not wipe certificates")
 
 	for _, cmd := range []*cobra.Command{
 		startCmd, statusCmd, stopCmd, runCmd,
@@ -1655,11 +1608,11 @@ func main() {
 	cachedHostsCmd.Flags().StringVar(&cachedHostsCluster, "cluster", "", "print hosts matching cluster")
 
 	for _, cmd := range []*cobra.Command{
-		getCmd, putCmd, runCmd, startCmd, statusCmd, stopCmd, testCmd,
+		getCmd, putCmd, runCmd, startCmd, statusCmd, stopCmd,
 		wipeCmd, pgurlCmd, adminurlCmd, sqlCmd, installCmd,
 	} {
 		switch cmd {
-		case startCmd, testCmd:
+		case startCmd:
 			cmd.Flags().BoolVar(
 				&install.StartOpts.Sequential, "sequential", true,
 				"start nodes sequentially so node IDs match hostnames")

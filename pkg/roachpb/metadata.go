@@ -1,14 +1,12 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package roachpb
 
@@ -19,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
 	"github.com/gogo/protobuf/proto"
 	"github.com/pkg/errors"
@@ -199,6 +198,14 @@ func (r *RangeDescriptor) IncrementGeneration() {
 	r.Generation = proto.Int64(r.GetGeneration() + 1)
 }
 
+// GetStickyBit returns the sticky bit of this RangeDescriptor.
+func (r RangeDescriptor) GetStickyBit() hlc.Timestamp {
+	if r.StickyBit == nil {
+		return hlc.Timestamp{}
+	}
+	return *r.StickyBit
+}
+
 // Validate performs some basic validation of the contents of a range descriptor.
 func (r RangeDescriptor) Validate() error {
 	if r.NextReplicaID == 0 {
@@ -259,7 +266,7 @@ func (r ReplicaDescriptor) String() string {
 	} else {
 		fmt.Fprintf(&buf, "%d", r.ReplicaID)
 	}
-	if r.Type == ReplicaType_LEARNER {
+	if r.GetType() == ReplicaType_LEARNER {
 		buf.WriteString("LEARNER")
 	}
 	return buf.String()
@@ -277,6 +284,14 @@ func (r ReplicaDescriptor) Validate() error {
 		return errors.Errorf("ReplicaID must not be zero")
 	}
 	return nil
+}
+
+// GetType returns the type of this ReplicaDescriptor.
+func (r ReplicaDescriptor) GetType() ReplicaType {
+	if r.Type == nil {
+		return ReplicaType_VOTER
+	}
+	return *r.Type
 }
 
 // PercentilesFromData derives percentiles from a slice of data points.

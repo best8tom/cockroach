@@ -1,14 +1,12 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package colrpc
 
@@ -25,7 +23,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/distsqlpb"
-	"github.com/cockroachdb/cockroach/pkg/sql/distsqlrun"
 	"github.com/cockroachdb/cockroach/pkg/sql/exec"
 	"github.com/cockroachdb/cockroach/pkg/sql/exec/coldata"
 	"github.com/cockroachdb/cockroach/pkg/sql/exec/types"
@@ -129,7 +126,7 @@ func TestOutboxInbox(t *testing.T) {
 	defer stopper.Stop(ctx)
 
 	clock := hlc.NewClock(hlc.UnixNano, time.Nanosecond)
-	_, mockServer, addr, err := distsqlrun.StartMockDistSQLServer(clock, stopper, staticNodeID)
+	_, mockServer, addr, err := distsqlpb.StartMockDistSQLServer(clock, stopper, staticNodeID)
 	require.NoError(t, err)
 
 	// Generate a random cancellation scenario.
@@ -270,7 +267,13 @@ func TestOutboxInbox(t *testing.T) {
 				// Copy batch since it's not safe to reuse after calling Next.
 				batchCopy := coldata.NewMemBatchWithSize(typs, int(outputBatch.Length()))
 				for i := range typs {
-					batchCopy.ColVec(i).Append(outputBatch.ColVec(i), typs[i], 0, outputBatch.Length())
+					batchCopy.ColVec(i).Append(
+						coldata.AppendArgs{
+							ColType:   typs[i],
+							Src:       outputBatch.ColVec(i),
+							SrcEndIdx: outputBatch.Length(),
+						},
+					)
 				}
 				batchCopy.SetLength(outputBatch.Length())
 				outputBatches.Add(batchCopy)
@@ -352,7 +355,7 @@ func TestOutboxInboxMetadataPropagation(t *testing.T) {
 	stopper := stop.NewStopper()
 	defer stopper.Stop(ctx)
 
-	_, mockServer, addr, err := distsqlrun.StartMockDistSQLServer(
+	_, mockServer, addr, err := distsqlpb.StartMockDistSQLServer(
 		hlc.NewClock(hlc.UnixNano, time.Nanosecond), stopper, staticNodeID,
 	)
 	require.NoError(t, err)
@@ -477,7 +480,7 @@ func BenchmarkOutboxInbox(b *testing.B) {
 	stopper := stop.NewStopper()
 	defer stopper.Stop(ctx)
 
-	_, mockServer, addr, err := distsqlrun.StartMockDistSQLServer(
+	_, mockServer, addr, err := distsqlpb.StartMockDistSQLServer(
 		hlc.NewClock(hlc.UnixNano, time.Nanosecond), stopper, staticNodeID,
 	)
 	require.NoError(b, err)

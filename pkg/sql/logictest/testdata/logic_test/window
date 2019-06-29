@@ -278,12 +278,12 @@ SELECT avg(avg(k)) OVER () FROM kv ORDER BY 1
 query RR
 SELECT avg(k) OVER (), avg(v) OVER () FROM kv ORDER BY 1
 ----
-5  2.3333333333333333333
-5  2.3333333333333333333
-5  2.3333333333333333333
-5  2.3333333333333333333
-5  2.3333333333333333333
-5  2.3333333333333333333
+5  2.8
+5  2.8
+5  2.8
+5  2.8
+5  2.8
+5  2.8
 
 query error OVER specified, but now\(\) is neither a window function nor an aggregate function
 SELECT now() OVER () FROM kv ORDER BY 1
@@ -3144,3 +3144,180 @@ SELECT array_agg(a) OVER (w GROUPS 1 PRECEDING) FROM x WINDOW w AS (PARTITION BY
 {1}
 {2}
 {3}
+
+# Regression tests for #38103
+statement ok
+DROP TABLE IF EXISTS t
+
+statement ok
+CREATE TABLE t (a INT PRIMARY KEY, b INT)
+
+statement ok
+INSERT INTO t VALUES (1, 1), (2, NULL), (3, 3)
+
+query I
+SELECT min(b) OVER () FROM t
+----
+1
+1
+1
+
+query IIR
+SELECT a, b, sum(b) OVER (ROWS 0 PRECEDING) FROM t ORDER BY a
+----
+1 1    1
+2 NULL NULL
+3 3    3
+
+query IIR
+SELECT a, b, avg(b) OVER () FROM t ORDER BY a
+----
+1  1    2
+2  NULL 2
+3  3    2
+
+query IIR
+SELECT a, b, avg(b) OVER (ROWS 0 PRECEDING) FROM t ORDER BY a
+----
+1  1     1
+2  NULL  NULL
+3  3     3
+
+statement ok
+CREATE TABLE wxyz (w INT PRIMARY KEY, x INT, y INT, z INT)
+
+statement ok
+INSERT INTO wxyz VALUES
+  (1, 10, 1, 1),
+  (2, 10, 2, 0),
+  (3, 10, 1, 1),
+  (4, 10, 2, 0),
+  (5, 10, 2, 1),
+  (6, 10, 2, 0)
+
+# Cases involving interaction between limits and window functions.
+query IIIII rowsort
+SELECT *, rank() OVER (PARTITION BY z ORDER BY y) FROM wxyz ORDER BY y LIMIT 2
+----
+3  10  1  1  1
+1  10  1  1  1
+
+query IIIII rowsort
+SELECT *, dense_rank() OVER (PARTITION BY z ORDER BY y) FROM wxyz ORDER BY y LIMIT 2
+----
+3  10  1  1  1
+1  10  1  1  1
+
+query IIIIR rowsort
+SELECT *, avg(w) OVER (PARTITION BY z ORDER BY y) FROM wxyz ORDER BY y LIMIT 2
+----
+3  10  1  1  2
+1  10  1  1  2
+
+query IIIII rowsort
+SELECT *, rank() OVER (PARTITION BY w ORDER BY y) FROM wxyz ORDER BY y LIMIT 2
+----
+3  10  1  1  1
+1  10  1  1  1
+
+query IIIII rowsort
+SELECT *, dense_rank() OVER (PARTITION BY w ORDER BY y) FROM wxyz ORDER BY y LIMIT 2
+----
+3  10  1  1  1
+1  10  1  1  1
+
+query IIIIR rowsort
+SELECT *, avg(w) OVER (PARTITION BY w ORDER BY y) FROM wxyz ORDER BY y LIMIT 2
+----
+3  10  1  1  3
+1  10  1  1  1
+
+query IIIII rowsort
+SELECT *, rank() OVER (PARTITION BY w ORDER BY y) FROM wxyz ORDER BY w, y LIMIT 2
+----
+1  10  1  1  1
+2  10  2  0  1
+
+query IIIII rowsort
+SELECT *, dense_rank() OVER (PARTITION BY w ORDER BY y) FROM wxyz ORDER BY w, y LIMIT 2
+----
+1  10  1  1  1
+2  10  2  0  1
+
+query IIIIR rowsort
+SELECT *, avg(w) OVER (PARTITION BY w ORDER BY y) FROM wxyz ORDER BY w, y LIMIT 2
+----
+1  10  1  1  1
+2  10  2  0  2
+
+query IIIII rowsort
+SELECT *, rank() OVER (PARTITION BY w ORDER BY y) FROM wxyz ORDER BY w LIMIT 2
+----
+1  10  1  1  1
+2  10  2  0  1
+
+query IIIII rowsort
+SELECT *, dense_rank() OVER (PARTITION BY w ORDER BY y) FROM wxyz ORDER BY w LIMIT 2
+----
+1  10  1  1  1
+2  10  2  0  1
+
+query IIIIR rowsort
+SELECT *, avg(w) OVER (PARTITION BY w ORDER BY y) FROM wxyz ORDER BY w LIMIT 2
+----
+1  10  1  1  1
+2  10  2  0  2
+
+query IIIII rowsort
+SELECT *, rank() OVER (PARTITION BY w ORDER BY y) FROM wxyz ORDER BY y, w LIMIT 2
+----
+1  10  1  1  1
+3  10  1  1  1
+
+query IIIII rowsort
+SELECT *, dense_rank() OVER (PARTITION BY w ORDER BY y) FROM wxyz ORDER BY y, w LIMIT 2
+----
+1  10  1  1  1
+3  10  1  1  1
+
+query IIIIR rowsort
+SELECT *, avg(w) OVER (PARTITION BY w ORDER BY y) FROM wxyz ORDER BY y, w LIMIT 2
+----
+1  10  1  1  1
+3  10  1  1  3
+
+query IIIII rowsort
+SELECT *, rank() OVER (PARTITION BY w, z ORDER BY y) FROM wxyz ORDER BY w, z, y LIMIT 2
+----
+1  10  1  1  1
+2  10  2  0  1
+
+query IIIII rowsort
+SELECT *, dense_rank() OVER (PARTITION BY w, z ORDER BY y) FROM wxyz ORDER BY w, z, y LIMIT 2
+----
+1  10  1  1  1
+2  10  2  0  1
+
+query IIIIR rowsort
+SELECT *, avg(w) OVER (PARTITION BY w, z ORDER BY y) FROM wxyz ORDER BY w, z, y LIMIT 2
+----
+1  10  1  1  1
+2  10  2  0  2
+
+query IIIII rowsort
+SELECT *, rank() OVER (PARTITION BY w, z ORDER BY y) FROM wxyz ORDER BY z, w, y LIMIT 2
+----
+2  10  2  0  1
+4  10  2  0  1
+
+query IIIII rowsort
+SELECT *, dense_rank() OVER (PARTITION BY w, z ORDER BY y) FROM wxyz ORDER BY z, w, y LIMIT 2
+----
+2  10  2  0  1
+4  10  2  0  1
+
+query IIIIR rowsort
+SELECT *, avg(w) OVER (PARTITION BY w, z ORDER BY y) FROM wxyz ORDER BY z, w, y LIMIT 2
+----
+2  10  2  0  2
+4  10  2  0  4

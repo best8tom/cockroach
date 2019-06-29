@@ -1,14 +1,12 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package storage
 
@@ -208,6 +206,23 @@ func (s *raftScheduler) worker(ctx context.Context) {
 				state |= stateRaftReady
 			}
 		}
+		// TODO(nvanbenschoten): Consider removing the call to handleRaftReady
+		// from processRequestQueue. If we did this then processReady would be
+		// the only place where we call into handleRaftReady. This would
+		// eliminate superfluous calls into the function and would improve
+		// batching. It would also simplify the code in processRequestQueue.
+		//
+		// The code change here would likely look something like:
+		//
+		//  if state&stateRaftRequest != 0 {
+		//  	if s.processor.processRequestQueue(ctx, id) {
+		//  		state |= stateRaftReady
+		//  	}
+		//  }
+		//
+		// Initial experimentation with this approach indicated that it reduced
+		// throughput for single-Range write-heavy workloads. More investigation
+		// is needed to determine whether that should be expected.
 		if state&stateRaftReady != 0 {
 			s.processor.processReady(ctx, id)
 		}

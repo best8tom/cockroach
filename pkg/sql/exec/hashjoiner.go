@@ -1,14 +1,12 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package exec
 
@@ -293,7 +291,14 @@ func (hj *hashJoinEqOp) emitUnmatched() {
 		valCol := hj.ht.vals[hj.ht.outCols[i]]
 		colType := hj.ht.valTypes[hj.ht.outCols[i]]
 
-		outCol.CopyWithSelInt64(valCol, hj.prober.buildIdx, nResults, colType)
+		outCol.Copy(
+			coldata.CopyArgs{
+				ColType:   colType,
+				Src:       valCol,
+				Sel64:     hj.prober.buildIdx,
+				SrcEndIdx: uint64(nResults),
+			},
+		)
 	}
 
 	hj.prober.batch.SetLength(nResults)
@@ -467,14 +472,16 @@ func makeHashTable(
 // output columns.
 func (ht *hashTable) loadBatch(batch coldata.Batch) {
 	batchSize := batch.Length()
-	sel := batch.Selection()
-
 	for i, colIdx := range ht.valCols {
-		if sel != nil {
-			ht.vals[i].AppendWithSel(batch.ColVec(int(colIdx)), sel, batchSize, ht.valTypes[i], ht.size)
-		} else {
-			ht.vals[i].Append(batch.ColVec(int(colIdx)), ht.valTypes[i], ht.size, batchSize)
-		}
+		ht.vals[i].Append(
+			coldata.AppendArgs{
+				ColType:   ht.valTypes[i],
+				Src:       batch.ColVec(int(colIdx)),
+				Sel:       batch.Selection(),
+				DestIdx:   ht.size,
+				SrcEndIdx: batchSize,
+			},
+		)
 	}
 
 	ht.size += uint64(batchSize)
@@ -904,11 +911,20 @@ func (prober *hashJoinProber) congregate(nResults uint16, batch coldata.Batch, b
 		valCol := prober.ht.vals[prober.ht.outCols[i]]
 		colType := prober.ht.valTypes[prober.ht.outCols[i]]
 
+		var nils []bool
 		if prober.spec.outer {
-			outCol.CopyWithSelAndNilsInt64(valCol, prober.buildIdx, nResults, prober.probeRowUnmatched, colType)
-		} else {
-			outCol.CopyWithSelInt64(valCol, prober.buildIdx, nResults, colType)
+			nils = prober.probeRowUnmatched
 		}
+
+		outCol.Copy(
+			coldata.CopyArgs{
+				ColType:   colType,
+				Src:       valCol,
+				Sel64:     prober.buildIdx,
+				SrcEndIdx: uint64(nResults),
+				Nils:      nils,
+			},
+		)
 	}
 
 	for _, colIdx := range prober.spec.outCols {
@@ -916,7 +932,14 @@ func (prober *hashJoinProber) congregate(nResults uint16, batch coldata.Batch, b
 		valCol := batch.ColVec(int(colIdx))
 		colType := prober.spec.sourceTypes[colIdx]
 
-		outCol.CopyWithSelInt16(valCol, prober.probeIdx, nResults, colType)
+		outCol.Copy(
+			coldata.CopyArgs{
+				ColType:   colType,
+				Src:       valCol,
+				Sel:       prober.probeIdx,
+				SrcEndIdx: uint64(nResults),
+			},
+		)
 	}
 
 	if prober.build.outer {

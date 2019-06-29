@@ -1,14 +1,12 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package rpc
 
@@ -29,6 +27,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util/contextutil"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
+	"github.com/cockroachdb/cockroach/pkg/util/growstack"
 	"github.com/cockroachdb/cockroach/pkg/util/grpcutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -43,6 +42,8 @@ import (
 	"golang.org/x/sync/syncmap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/encoding"
+	encodingproto "google.golang.org/grpc/encoding/proto"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 )
@@ -653,6 +654,28 @@ func (ctx *Context) GRPCDialOptions() ([]grpc.DialOption, error) {
 	return dialOpts, nil
 }
 
+// growStackCodec wraps the default grpc/encoding/proto codec to detect
+// BatchRequest rpcs and grow the stack prior to Unmarshaling.
+type growStackCodec struct {
+	encoding.Codec
+}
+
+// Unmarshal detects BatchRequests and calls growstack.Grow before calling
+// through to the underlying codec.
+func (c growStackCodec) Unmarshal(data []byte, v interface{}) error {
+	if _, ok := v.(*roachpb.BatchRequest); ok {
+		growstack.Grow()
+	}
+	return c.Codec.Unmarshal(data, v)
+}
+
+// Install the growStackCodec over the default proto codec in order to grow the
+// stack for BatchRequest RPCs prior to unmarshaling.
+func init() {
+	protoCodec := encoding.GetCodec(encodingproto.Name)
+	encoding.RegisterCodec(growStackCodec{Codec: protoCodec})
+}
+
 // onlyOnceDialer implements the grpc.WithDialer interface but only
 // allows a single connection attempt. If a reconnection is attempted,
 // redialChan is closed to signal a higher-level retry loop. This
@@ -880,15 +903,18 @@ func (ctx *Context) runHeartbeat(
 
 			var response *PingResponse
 			sendTime := ctx.LocalClock.PhysicalTime()
-			err := contextutil.RunWithTimeout(goCtx, "rpc heartbeat", ctx.heartbeatTimeout,
-				func(goCtx context.Context) error {
-					// NB: We want the request to fail-fast (the default), otherwise we won't
-					// be notified of transport failures.
-					var err error
-					response, err = heartbeatClient.Ping(goCtx, request)
-					return err
-				})
-
+			ping := func(goCtx context.Context) (err error) {
+				// NB: We want the request to fail-fast (the default), otherwise we won't
+				// be notified of transport failures.
+				response, err = heartbeatClient.Ping(goCtx, request)
+				return err
+			}
+			var err error
+			if ctx.heartbeatTimeout > 0 {
+				err = contextutil.RunWithTimeout(goCtx, "rpc heartbeat", ctx.heartbeatTimeout, ping)
+			} else {
+				err = ping(goCtx)
+			}
 			if err == nil {
 				err = errors.Wrap(
 					checkVersion(ctx.version, response.ServerVersion),

@@ -1,14 +1,12 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package sql_test
 
@@ -4826,11 +4824,11 @@ CREATE TABLE t.test (k INT PRIMARY KEY, v INT);
 func TestSchemaChangeJobRunningStatusValidation(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	params, _ := tests.CreateTestServerParams()
-	var runBeforeChecksValidation func() error
+	var runBeforeConstraintValidation func() error
 	params.Knobs = base.TestingKnobs{
 		SQLSchemaChanger: &sql.SchemaChangerTestingKnobs{
-			RunBeforeChecksValidation: func() error {
-				return runBeforeChecksValidation()
+			RunBeforeConstraintValidation: func() error {
+				return runBeforeConstraintValidation()
 			},
 		},
 		// Disable backfill migrations, we still need the jobs table migration.
@@ -4851,7 +4849,7 @@ INSERT INTO t.test (k, v) VALUES (1, 99), (2, 100);
 	tableDesc := sqlbase.GetTableDescriptor(kvDB, "t", "test")
 
 	sqlRun := sqlutils.MakeSQLRunner(sqlDB)
-	runBeforeChecksValidation = func() error {
+	runBeforeConstraintValidation = func() error {
 		return jobutils.VerifyRunningSystemJob(t, sqlRun, 0, jobspb.TypeSchemaChange, sql.RunningStatusValidation, jobs.Record{
 			Username:    security.RootUser,
 			Description: "ALTER TABLE t.public.test ADD COLUMN a INT8 AS (v - 1) STORED, ADD CHECK ((a < v) AND (a IS NOT NULL))",
@@ -4864,6 +4862,62 @@ INSERT INTO t.test (k, v) VALUES (1, 99), (2, 100);
 	if _, err := sqlDB.Exec(
 		`ALTER TABLE t.test ADD COLUMN a INT AS (v - 1) STORED, ADD CHECK (a < v AND a IS NOT NULL)`,
 	); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestFKReferencesAddedOnlyOnceOnRetry verifies that if ALTER TABLE ADD FOREIGN
+// KEY is retried, both the FK reference and backreference (on another table)
+// are only added once. This is addressed by #38377.
+func TestFKReferencesAddedOnlyOnceOnRetry(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	params, _ := tests.CreateTestServerParams()
+	var runBeforeConstraintValidation func() error
+	errorReturned := false
+	params.Knobs = base.TestingKnobs{
+		SQLSchemaChanger: &sql.SchemaChangerTestingKnobs{
+			RunBeforeConstraintValidation: func() error {
+				return runBeforeConstraintValidation()
+			},
+		},
+		// Disable backfill migrations, we still need the jobs table migration.
+		SQLMigrationManager: &sqlmigrations.MigrationManagerTestingKnobs{
+			DisableBackfillMigrations: true,
+		},
+	}
+	s, sqlDB, _ := serverutils.StartServer(t, params)
+	defer s.Stopper().Stop(context.TODO())
+	if _, err := sqlDB.Exec(`
+CREATE DATABASE t;
+CREATE TABLE t.test (k INT PRIMARY KEY, v INT);
+CREATE TABLE t.test2 (k INT, INDEX (k));
+`); err != nil {
+		t.Fatal(err)
+	}
+
+	// After FK forward references and backreferences are installed, and before
+	// the validation query is run, return an error so that the schema change
+	// has to be retried. The error is only returned on the first try.
+	runBeforeConstraintValidation = func() error {
+		if !errorReturned {
+			errorReturned = true
+			return context.DeadlineExceeded
+
+		}
+		return nil
+	}
+	if _, err := sqlDB.Exec(`
+ALTER TABLE t.test2 ADD FOREIGN KEY (k) REFERENCES t.test;
+`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Table descriptor validation failures, resulting from, e.g., broken or
+	// duplicated backreferences, are returned by SHOW CONSTRAINTS.
+	if _, err := sqlDB.Query(`SHOW CONSTRAINTS FROM t.test`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqlDB.Query(`SHOW CONSTRAINTS FROM t.test2`); err != nil {
 		t.Fatal(err)
 	}
 }

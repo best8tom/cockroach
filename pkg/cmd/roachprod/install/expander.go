@@ -1,14 +1,12 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package install
 
@@ -26,6 +24,7 @@ var pgPortRe = regexp.MustCompile(`{pgport(:[-,0-9]+)?}`)
 var uiPortRe = regexp.MustCompile(`{uiport(:[-,0-9]+)?}`)
 var storeDirRe = regexp.MustCompile(`{store-dir}`)
 var logDirRe = regexp.MustCompile(`{log-dir}`)
+var certsDirRe = regexp.MustCompile(`{certs-dir}`)
 
 // expander expands a string which contains templated parameters for cluster
 // attributes like pgurl, pgport, uiport, store-dir, and log-dir with the
@@ -54,6 +53,7 @@ func (e *expander) expand(c *SyncedCluster, arg string) (string, error) {
 			e.maybeExpandUIPort,
 			e.maybeExpandStoreDir,
 			e.maybeExpandLogDir,
+			e.maybeExpandCertsDir,
 		}
 		for _, f := range expanders {
 			v, expanded, fErr := f(c, s)
@@ -167,4 +167,12 @@ func (e *expander) maybeExpandLogDir(c *SyncedCluster, s string) (string, bool, 
 		return s, false, nil
 	}
 	return c.Impl.LogDir(c, e.node), true, nil
+}
+
+// maybeExpandCertsDir is an expanderFunc for "{certs-dir}"
+func (e *expander) maybeExpandCertsDir(c *SyncedCluster, s string) (string, bool, error) {
+	if !certsDirRe.MatchString(s) {
+		return s, false, nil
+	}
+	return c.Impl.CertsDir(c, e.node), true, nil
 }

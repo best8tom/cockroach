@@ -1,14 +1,12 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package memo
 
@@ -594,7 +592,9 @@ func (f *ExprFmtCtx) FormatScalarProps(scalar opt.ScalarExpr) {
 	// expression.
 	typ := scalar.DataType()
 	if typ == nil {
-		f.Buffer.WriteString(" [type=undefined]")
+		if scalar.Op() != opt.FKChecksItemOp {
+			f.Buffer.WriteString(" [type=undefined]")
+		}
 	} else {
 		first := true
 		writeProp := func(format string, args ...interface{}) {
@@ -676,6 +676,38 @@ func (f *ExprFmtCtx) formatScalarPrivate(scalar opt.ScalarExpr) {
 
 	case *CastExpr:
 		private = t.Typ.SQLString()
+
+	case *FKChecksItem:
+		origin := f.Memo.metadata.TableMeta(t.OriginTable)
+		referenced := f.Memo.metadata.TableMeta(t.ReferencedTable)
+		var fk cat.ForeignKeyConstraint
+		if t.FKOutbound {
+			fk = origin.Table.OutboundForeignKey(t.FKOrdinal)
+		} else {
+			fk = referenced.Table.InboundForeignKey(t.FKOrdinal)
+		}
+		// Print the FK as:
+		//   child(a,b) -> parent(a,b)
+		//
+		// TODO(radu): maybe flip these if we are deleting from the parent (i.e.
+		// FKOutbound=false)?
+		fmt.Fprintf(f.Buffer, ": %s(", origin.Alias.TableName)
+		for i := 0; i < fk.ColumnCount(); i++ {
+			if i > 0 {
+				f.Buffer.WriteByte(',')
+			}
+			col := origin.Table.Column(fk.OriginColumnOrdinal(origin.Table, i))
+			f.Buffer.WriteString(string(col.ColName()))
+		}
+		fmt.Fprintf(f.Buffer, ") -> %s(", referenced.Alias.TableName)
+		for i := 0; i < fk.ColumnCount(); i++ {
+			if i > 0 {
+				f.Buffer.WriteByte(',')
+			}
+			col := referenced.Table.Column(fk.ReferencedColumnOrdinal(referenced.Table, i))
+			f.Buffer.WriteString(string(col.ColName()))
+		}
+		f.Buffer.WriteByte(')')
 
 	default:
 		private = scalar.Private()

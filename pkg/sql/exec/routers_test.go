@@ -1,14 +1,12 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package exec
 
@@ -20,11 +18,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/sql/distsqlpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/exec/coldata"
 	"github.com/cockroachdb/cockroach/pkg/sql/exec/types"
+	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/pkg/errors"
+	"github.com/stretchr/testify/require"
 )
 
 // getDataAndFullSelection is a test helper that generates tuples representing
@@ -525,7 +526,7 @@ func TestHashRouterCancellation(t *testing.T) {
 	t.Run("BeforeRun", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		r.run(ctx)
+		r.Run(ctx)
 
 		if numCancels != int64(len(outputs)) {
 			t.Fatalf("expected %d canceled outputs, actual %d", len(outputs), numCancels)
@@ -534,6 +535,10 @@ func TestHashRouterCancellation(t *testing.T) {
 		if numAddBatches != 0 {
 			t.Fatalf("detected %d addBatch calls but expected 0", numAddBatches)
 		}
+
+		meta := r.DrainMeta(ctx)
+		require.Equal(t, 1, len(meta))
+		require.True(t, testutils.IsError(meta[0].Err, "context canceled"), meta[0].Err)
 	})
 
 	testCases := []struct {
@@ -564,10 +569,11 @@ func TestHashRouterCancellation(t *testing.T) {
 				}()
 			}
 
-			doneCh := make(chan struct{})
+			routerMeta := make(chan []distsqlpb.ProducerMetadata)
 			go func() {
-				r.run(ctx)
-				close(doneCh)
+				r.Run(ctx)
+				routerMeta <- r.DrainMeta(ctx)
+				close(routerMeta)
 			}()
 
 			time.Sleep(time.Millisecond)
@@ -578,12 +584,14 @@ func TestHashRouterCancellation(t *testing.T) {
 				}
 			}
 			select {
-			case <-doneCh:
+			case <-routerMeta:
 				t.Fatal("hash router goroutine unexpectedly done")
 			default:
 			}
 			cancel()
-			<-doneCh
+			meta := <-routerMeta
+			require.Equal(t, 1, len(meta))
+			require.True(t, testutils.IsError(meta[0].Err, "canceled"), meta[0].Err)
 
 			if numCancels != int64(len(outputs)) {
 				t.Fatalf("expected %d canceled outputs, actual %d", len(outputs), numCancels)
@@ -603,7 +611,7 @@ func TestHashRouterOneOutput(t *testing.T) {
 	data, _ := getDataAndFullSelection()
 	typs := []types.T{types.Int64}
 
-	r, routerOutputs := newHashRouter(
+	r, routerOutputs := NewHashRouter(
 		newOpFixedSelTestInput(sel, uint16(len(sel)), data), typs, []int{0}, 1, /* numOutputs */
 	)
 
@@ -621,7 +629,7 @@ func TestHashRouterOneOutput(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
-		r.run(ctx)
+		r.Run(ctx)
 		wg.Done()
 	}()
 
@@ -726,7 +734,7 @@ func TestHashRouterRandom(t *testing.T) {
 			ctx, cancelFunc := context.WithCancel(context.Background())
 			wg.Add(1)
 			go func() {
-				r.run(ctx)
+				r.Run(ctx)
 				wg.Done()
 			}()
 
@@ -782,7 +790,7 @@ func BenchmarkHashRouter(b *testing.B) {
 	for _, numOutputs := range []int{2, 4, 8, 16} {
 		for _, numInputBatches := range []int{2, 4, 8, 16} {
 			b.Run(fmt.Sprintf("numOutputs=%d/numInputBatches=%d", numOutputs, numInputBatches), func(b *testing.B) {
-				r, outputs := newHashRouter(input, types, []int{0}, numOutputs)
+				r, outputs := NewHashRouter(input, types, []int{0}, numOutputs)
 				b.SetBytes(8 * coldata.BatchSize * int64(numInputBatches))
 				// We expect distribution to not change. This is a sanity check that
 				// we're resetting properly.
@@ -793,7 +801,7 @@ func BenchmarkHashRouter(b *testing.B) {
 				zeroDistribution := make([]int, len(outputs))
 				b.ResetTimer()
 				for i := 0; i < b.N; i++ {
-					input.resetBatchesToReturn(numInputBatches)
+					input.ResetBatchesToReturn(numInputBatches)
 					r.reset()
 					wg.Add(len(outputs))
 					for j := range outputs {
@@ -808,7 +816,7 @@ func BenchmarkHashRouter(b *testing.B) {
 							wg.Done()
 						}(j)
 					}
-					r.run(ctx)
+					r.Run(ctx)
 					wg.Wait()
 					// sum sanity checks that we are actually pushing as many values as we
 					// expect.

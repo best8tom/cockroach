@@ -7,15 +7,13 @@
 //
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 // This code was derived from https://github.com/youtube/vitess.
 
@@ -142,7 +140,7 @@ func EncodeUnrestrictedSQLIdent(buf *bytes.Buffer, s string, flags EncodeFlags) 
 		buf.WriteString(s)
 		return
 	}
-	encodeEscapedSQLIdent(buf, s)
+	EncodeEscapedSQLIdent(buf, s)
 }
 
 // EncodeRestrictedSQLIdent writes the identifier in s to buf. The
@@ -154,13 +152,13 @@ func EncodeRestrictedSQLIdent(buf *bytes.Buffer, s string, flags EncodeFlags) {
 		buf.WriteString(s)
 		return
 	}
-	encodeEscapedSQLIdent(buf, s)
+	EncodeEscapedSQLIdent(buf, s)
 }
 
-// encodeEscapedSQLIdent writes the identifier in s to buf. The
+// EncodeEscapedSQLIdent writes the identifier in s to buf. The
 // identifier is always quoted. Double quotes inside the identifier
 // are escaped.
-func encodeEscapedSQLIdent(buf *bytes.Buffer, s string) {
+func EncodeEscapedSQLIdent(buf *bytes.Buffer, s string) {
 	buf.WriteByte('"')
 	start := 0
 	for i, n := 0, len(s); i < n; i++ {

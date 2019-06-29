@@ -1,14 +1,12 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package exec
 
@@ -42,8 +40,8 @@ func (b *circularGroupsBuffer) reset(lIdx int, lLength int, rIdx int, rLength in
 	b.bufferEndIdx = 1
 	b.bufferEndIdxForCol = 1
 
-	b.leftGroups[0] = group{lIdx, lLength, 1, 0}
-	b.rightGroups[0] = group{rIdx, rLength, 1, 0}
+	b.leftGroups[0] = group{lIdx, lLength, 1, 0, false, false}
+	b.rightGroups[0] = group{rIdx, rLength, 1, 0, false, false}
 }
 
 // nextGroupInCol returns whether or not there exists a next group in the current
@@ -65,6 +63,12 @@ func (b *circularGroupsBuffer) nextGroupInCol(lGroup *group, rGroup *group) bool
 	return true
 }
 
+// isLastGroupInCol returns whether the last group obtained via nextGroupInCol
+// from the buffer is the last one for the column.
+func (b *circularGroupsBuffer) isLastGroupInCol() bool {
+	return b.bufferStartIdx == b.bufferEndIdxForCol
+}
+
 // addGroupsToNextCol appends a left and right group to the buffer. In an iteration
 // of a column, these values are either processed in the next equality column, or
 // used to build the cross product.
@@ -82,6 +86,33 @@ func (b *circularGroupsBuffer) addGroupsToNextCol(
 		rowEndIdx:   curRIdx + rRunLength,
 		numRepeats:  lRunLength,
 		toBuild:     lRunLength * rRunLength,
+	}
+	b.bufferEndIdx++
+
+	// Modulus on every step is more expensive than this check.
+	if b.bufferEndIdx >= b.bufferCap {
+		b.bufferEndIdx -= b.bufferCap
+	}
+}
+
+// addLeftOuterGroup adds a left and right group to the buffer that correspond
+// to an unmatched row from the left side in the case of LEFT OUTER JOIN.
+func (b *circularGroupsBuffer) addLeftOuterGroup(curLIdx int, curRIdx int) {
+	b.leftGroups[b.bufferEndIdx] = group{
+		rowStartIdx: curLIdx,
+		rowEndIdx:   curLIdx + 1,
+		numRepeats:  1,
+		toBuild:     1,
+		nullGroup:   false,
+		unmatched:   true,
+	}
+	b.rightGroups[b.bufferEndIdx] = group{
+		rowStartIdx: curRIdx,
+		rowEndIdx:   curRIdx + 1,
+		numRepeats:  1,
+		toBuild:     1,
+		nullGroup:   true,
+		unmatched:   false,
 	}
 	b.bufferEndIdx++
 

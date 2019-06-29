@@ -1,14 +1,12 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package storage
 
@@ -224,8 +222,6 @@ type Replica struct {
 		mergeComplete chan struct{}
 		// The state of the Raft state machine.
 		state storagepb.ReplicaState
-		// Counter used for assigning lease indexes for proposals.
-		lastAssignedLeaseIndex uint64
 		// Last index/term persisted to the raft log (not necessarily
 		// committed). Note that lastTerm may be 0 (and thus invalid) even when
 		// lastIndex is known, in which case the term will have to be retrieved
@@ -284,6 +280,12 @@ type Replica struct {
 		minLeaseProposedTS hlc.Timestamp
 		// A pointer to the zone config for this replica.
 		zone *config.ZoneConfig
+		// proposalBuf buffers Raft commands as they are passed to the Raft
+		// replication subsystem. The buffer is populated by requests after
+		// evaluation and is consumed by the Raft processing thread. Once
+		// consumed, commands are proposed through Raft and moved to the
+		// proposals map.
+		proposalBuf propBuf
 		// proposals stores the Raft in-flight commands which originated at
 		// this Replica, i.e. all commands for which propose has been called,
 		// but which have not yet applied.
@@ -383,8 +385,6 @@ type Replica struct {
 		// newly recreated replica will have a complete range descriptor.
 		lastToReplica, lastFromReplica roachpb.ReplicaDescriptor
 
-		// submitProposalFn can be set to mock out the propose operation.
-		submitProposalFn func(*ProposalData) error
 		// Computed checksum at a snapshot UUID.
 		checksums map[uuid.UUID]ReplicaChecksum
 
@@ -398,16 +398,11 @@ type Replica struct {
 
 		proposalQuotaBaseIndex uint64
 
-		// For command size based allocations we keep track of the sizes of all
-		// in-flight commands.
-		commandSizes map[storagebase.CmdIDKey]int
-
-		// Once the leader observes a proposal come 'out of Raft', we consult
-		// the 'commandSizes' map to determine the size of the associated
-		// command and add it to a queue of quotas we have yet to release back
-		// to the quota pool. We only do so when all replicas have persisted
-		// the corresponding entry into their logs.
-		quotaReleaseQueue []int
+		// Once the leader observes a proposal come 'out of Raft', we add the
+		// size of the associated command to a queue of quotas we have yet to
+		// release back to the quota pool. We only do so when all replicas have
+		// persisted the corresponding entry into their logs.
+		quotaReleaseQueue []int64
 
 		// Counts calls to Replica.tick()
 		ticks int
@@ -588,9 +583,8 @@ func (r *Replica) cleanupFailedProposalLocked(p *ProposalData) {
 	// NB: We may be double free-ing here in cases where proposals are
 	// duplicated. To counter this our quota pool is capped at the initial
 	// quota size.
-	if cmdSize, ok := r.mu.commandSizes[p.idKey]; ok {
-		r.mu.proposalQuota.add(int64(cmdSize))
-		delete(r.mu.commandSizes, p.idKey)
+	if r.mu.proposalQuota != nil {
+		r.mu.proposalQuota.add(p.quotaSize)
 	}
 }
 
@@ -1455,7 +1449,6 @@ func (r *Replica) maybeWatchForMerge(ctx context.Context) error {
 					TxnMeta: enginepb.TxnMeta{Priority: enginepb.MinTxnPriority},
 				},
 				PusheeTxn:       intent.Txn,
-				DeprecatedNow:   b.Header.Timestamp,
 				PushType:        roachpb.PUSH_ABORT,
 				InclusivePushTo: true,
 			})

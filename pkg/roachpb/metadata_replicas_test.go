@@ -1,14 +1,12 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package roachpb
 
@@ -18,21 +16,30 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func newReplicaType(t ReplicaType) *ReplicaType {
+	return &t
+}
+
 func TestVotersLearnersAll(t *testing.T) {
+	voter := newReplicaType(ReplicaType_VOTER)
+	learner := newReplicaType(ReplicaType_LEARNER)
 	tests := [][]ReplicaDescriptor{
 		{},
-		{{Type: ReplicaType_VOTER}},
-		{{Type: ReplicaType_LEARNER}},
-		{{Type: ReplicaType_VOTER}, {Type: ReplicaType_LEARNER}, {Type: ReplicaType_VOTER}},
-		{{Type: ReplicaType_LEARNER}, {Type: ReplicaType_VOTER}, {Type: ReplicaType_LEARNER}},
+		{{Type: voter}},
+		{{Type: nil}},
+		{{Type: learner}},
+		{{Type: voter}, {Type: learner}, {Type: voter}},
+		{{Type: nil}, {Type: learner}, {Type: nil}},
+		{{Type: learner}, {Type: voter}, {Type: learner}},
+		{{Type: learner}, {Type: nil}, {Type: learner}},
 	}
 	for i, test := range tests {
 		r := MakeReplicaDescriptors(test)
 		for _, voter := range r.Voters() {
-			assert.Equal(t, ReplicaType_VOTER, voter.Type, "testcase %d", i)
+			assert.Equal(t, ReplicaType_VOTER, voter.GetType(), "testcase %d", i)
 		}
 		for _, learner := range r.Learners() {
-			assert.Equal(t, ReplicaType_LEARNER, learner.Type, "testcase %d", i)
+			assert.Equal(t, ReplicaType_LEARNER, learner.GetType(), "testcase %d", i)
 		}
 		assert.Equal(t, len(test), len(r.All()), "testcase %d", i)
 	}
@@ -64,7 +71,7 @@ func TestReplicaDescriptorsRemove(t *testing.T) {
 				{NodeID: 1, StoreID: 1},
 				{NodeID: 2, StoreID: 2},
 				{NodeID: 3, StoreID: 3},
-				{NodeID: 4, StoreID: 4, Type: ReplicaType_LEARNER},
+				{NodeID: 4, StoreID: 4, Type: newReplicaType(ReplicaType_LEARNER)},
 			},
 			remove:   ReplicationTarget{NodeID: 2, StoreID: 2},
 			expected: true,
@@ -83,10 +90,10 @@ func TestReplicaDescriptorsRemove(t *testing.T) {
 			assert.Equal(t, lenBefore, len(r.All()), "testcase %d", i)
 		}
 		for _, voter := range r.Voters() {
-			assert.Equal(t, ReplicaType_VOTER, voter.Type, "testcase %d", i)
+			assert.Equal(t, ReplicaType_VOTER, voter.GetType(), "testcase %d", i)
 		}
 		for _, learner := range r.Learners() {
-			assert.Equal(t, ReplicaType_LEARNER, learner.Type, "testcase %d", i)
+			assert.Equal(t, ReplicaType_LEARNER, learner.GetType(), "testcase %d", i)
 		}
 	}
 }

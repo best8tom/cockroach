@@ -1,14 +1,12 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package kv
 
@@ -163,9 +161,10 @@ func (sr *txnSpanRefresher) maybeRetrySend(
 	// splits up batches to send to multiple ranges in parallel, and
 	// then combines the results, partial success makes it very
 	// difficult to determine what can be retried.
-	if aPSErr, ok := pErr.GetDetail().(*roachpb.MixedSuccessError); ok {
-		log.VEventf(ctx, 2, "got partial success; cannot retry %s (pErr=%s)", ba, aPSErr.Wrapped)
-		return nil, aPSErr.Wrapped, hlc.Timestamp{}
+	if mse, ok := pErr.GetDetail().(*roachpb.MixedSuccessError); ok {
+		pErr.SetDetail(mse.GetWrapped())
+		log.VEventf(ctx, 2, "got partial success; cannot retry %s (pErr=%s)", ba, pErr)
+		return nil, pErr, hlc.Timestamp{}
 	}
 
 	// Check for an error which can be retried after updating spans.

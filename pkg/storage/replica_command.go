@@ -1,14 +1,12 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package storage
 
@@ -25,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc/nodedialer"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage/engine"
 	"github.com/cockroachdb/cockroach/pkg/storage/storagebase"
 	"github.com/cockroachdb/cockroach/pkg/storage/storagepb"
@@ -189,9 +186,9 @@ func (r *Replica) adminSplitWithDescriptor(
 		log.Event(ctx, "range already split")
 		// Even if the range is already split, we should still update the sticky
 		// bit if it has a later expiration time.
-		if desc.StickyBit.Less(args.ExpirationTime) {
+		if desc.GetStickyBit().Less(args.ExpirationTime) {
 			newDesc := *desc
-			newDesc.StickyBit = args.ExpirationTime
+			newDesc.StickyBit = &args.ExpirationTime
 			err := r.store.DB().Txn(ctx, func(ctx context.Context, txn *client.Txn) error {
 				dbDescValue, err := conditionalGetDescValueFromDB(ctx, txn, desc)
 				if err != nil {
@@ -239,8 +236,17 @@ func (r *Replica) adminSplitWithDescriptor(
 		return reply, errors.Errorf("unable to allocate right hand side range descriptor: %s", err)
 	}
 
-	// Set the range descriptor's sticky bit.
-	rightDesc.StickyBit = args.ExpirationTime
+	// TODO(jeffreyxiao): Remove this check in 20.1.
+	// Note that the client API for splitting has expiration time as
+	// non-nullable, but the internal representation of a sticky bit is nullable
+	// for backwards compatibility. If expiration time is the zero timestamp, we
+	// must be sure not to set the sticky bit to the zero timestamp because the
+	// byte representation of setting the stickyBit to nil is different than
+	// setting it to hlc.Timestamp{}. This check ensures that CPuts would not
+	// fail on older versions.
+	if (args.ExpirationTime != hlc.Timestamp{}) {
+		rightDesc.StickyBit = &args.ExpirationTime
+	}
 
 	// Init updated version of existing range descriptor.
 	leftDesc := *desc
@@ -376,10 +382,12 @@ func (r *Replica) adminUnsplitWithDescriptor(
 		return reply, errors.Errorf("key %s is not the start of a range", args.Header().Key)
 	}
 
-	// If the range's sticky bit is already hlc.Timestamp{}, we treat the
-	// unsplit command as a no-op and return success instead of throwing an
-	// error.
-	if (desc.StickyBit == hlc.Timestamp{}) {
+	// If the range's sticky bit is already hlc.Timestamp{}, we treat the unsplit
+	// command as a no-op and return success instead of throwing an error. On
+	// mixed version clusters that don't support StickyBit, all range descriptor
+	// sticky bits are guaranteed to be nil, so we can skip checking the cluster
+	// version.
+	if (desc.GetStickyBit() == hlc.Timestamp{}) {
 		return reply, nil
 	}
 
@@ -391,7 +399,7 @@ func (r *Replica) adminUnsplitWithDescriptor(
 
 		b := txn.NewBatch()
 		newDesc := *desc
-		newDesc.StickyBit = hlc.Timestamp{}
+		newDesc.StickyBit = &hlc.Timestamp{}
 		descKey := keys.RangeDescriptorKey(newDesc.StartKey)
 		if err := updateRangeDescriptor(b, descKey, dbDescValue, &newDesc); err != nil {
 			return err
@@ -421,6 +429,7 @@ func (r *Replica) adminUnsplitWithDescriptor(
 			// look at the root cause to sniff out the changed descriptor.
 			err = &benignError{errors.Wrap(err, msg)}
 		}
+		return reply, err
 	}
 	return reply, nil
 }
@@ -533,7 +542,7 @@ func (r *Replica) AdminMerge(
 		if err != nil {
 			return err
 		}
-		if err := dbRightDescKV.Value.GetProto(&rightDesc); err != nil {
+		if err := dbRightDescKV.ValueProto(&rightDesc); err != nil {
 			return err
 		}
 
@@ -996,16 +1005,112 @@ func (r *Replica) changeReplicas(
 	return &updatedDesc, nil
 }
 
-// sendSnapshot sends a snapshot of the replica state to the specified
-// replica. This is used for both preemptive snapshots that are performed
-// before adding a replica to a range, and for Raft-initiated snapshots that
-// are used to bring a replica up to date that has fallen too far
-// behind. Currently only invoked from replicateQueue and raftSnapshotQueue. Be
-// careful about adding additional calls as generating a snapshot is moderately
+// sendSnapshot sends a snapshot of the replica state to the specified replica.
+// Currently only invoked from replicateQueue and raftSnapshotQueue. Be careful
+// about adding additional calls as generating a snapshot is moderately
 // expensive.
+//
+// A snapshot is a bulk transfer of all data in a range. It consists of a
+// consistent view of all the state needed to run some replica of a range as of
+// some applied index (not as of some mvcc-time). Snapshots are used by Raft
+// when a follower is far enough behind the leader that it can no longer be
+// caught up using incremental diffs (because the leader has already garbage
+// collected the diffs, in this case because it truncated the Raft log past
+// where the follower is).
+//
+// We also proactively send a snapshot when adding a new replica to bootstrap it
+// (this is called a "learner" snapshot and is a special case of a Raft
+// snapshot, we just speed the process along). It's called a learner snapshot
+// because it's sent to what Raft terms a learner replica. As of 19.2, when we
+// add a new replica, it's first added as a learner using a Raft ConfChange,
+// which means it accepts Raft traffic but doesn't vote or affect quorum. Then
+// we immediately send it a snapshot to catch it up. After the snapshot
+// successfully applies, we turn it into a normal voting replica using another
+// ConfChange. It then uses the normal mechanisms to catch up with whatever got
+// committed to the Raft log during the snapshot transfer. In contrast to adding
+// the voting replica directly, this avoids a period of fragility when the
+// replica would be a full member, but very far behind. [1]
+//
+// Snapshots are expensive and mostly unexpected (except learner snapshots
+// during rebalancing). The quota pool is responsible for keeping a leader from
+// getting too far ahead of any of the followers, so ideally they'd never be far
+// enough behind to need a snapshot.
+//
+// The snapshot process itself is broken into 3 parts: generating the snapshot,
+// transmitting it, and applying it.
+//
+// Generating the snapshot: The data contained in a snapshot is a full copy of
+// the replicated data plus everything the replica needs to be a healthy member
+// of a Raft group. The former is large, so we send it via streaming rpc instead
+// of keeping it all in memory at once. (Well, at least on the sender side. On
+// the recipient side, we do still buffer it, but we'll fix that at some point).
+// The `(Replica).GetSnapshot` method does the necessary locking and gathers the
+// various Raft state needed to run a replica. It also creates an iterator for
+// the range's data as it looked under those locks (this is powered by a RocksDB
+// snapshot, which is a different thing but a similar idea). Notably,
+// GetSnapshot does not do the data iteration.
+//
+// Transmitting the snapshot: The transfer itself happens over the grpc
+// `RaftSnapshot` method, which is a bi-directional stream of `SnapshotRequest`s
+// and `SnapshotResponse`s. The two sides are orchestrated by the
+// `(RaftTransport).SendSnapshot` and `(Store).receiveSnapshot` methods.
+//
+// `SendSnapshot` starts up the streaming rpc and first sends a header message
+// with everything but the range data and then blocks, waiting on the first
+// streaming response from the recipient. This lets us short-circuit sending the
+// range data if the recipient can't be contacted or if it can't use the
+// snapshot (which is usually the result of a race). The recipient's grpc
+// handler for RaftSnapshot sanity checks a few things and ends up calling down
+// into `receiveSnapshot`, which does the bulk of the work. `receiveSnapshot`
+// starts by waiting for a reservation in the snapshot rate limiter. It then
+// reads the header message and hands it to `shouldAcceptSnapshotData` to
+// determine if it can use the snapshot [2]. `shouldAcceptSnapshotData` is
+// advisory and can return false positives. If `shouldAcceptSnapshotData`
+// returns true, this is communicated back to the sender, which then proceeds to
+// call `kvBatchSnapshotStrategy.Send`. This uses the iterator captured earlier
+// to send the data in chunks, each chunk a streaming grpc message. The sender
+// then sends a final message with an indicaton that it's done and blocks again,
+// waiting for a second and final response from the recipient which indicates if
+// the snapshot was a success.
+//
+// Applying the snapshot: After the recipient has received the message
+// indicating it has all the data, it hands it all to
+// `(Store).processRaftSnapshotRequest` to be applied. First, this re-checks the
+// same things as `shouldAcceptSnapshotData` to make sure nothing has changed
+// while the snapshot was being transferred. It then guarantees that there is
+// either an initialized[3] replica or a `ReplicaPlaceholder`[4] to accept the
+// snapshot by creating a placeholder if necessary. Finally, a *Raft snapshot*
+// message is manually handed to the replica's Raft node (by calling
+// `stepRaftGroup` + `handleRaftReadyRaftMuLocked`), at which point the snapshot
+// has been applied.
+//
+// [1]: There is a third kind of snapshot, called "preemptive", which is how we
+// avoided the above fragility before learner replicas were introduced in the
+// 19.2 cycle. It's essentially a snapshot that we made very fast by staging it
+// on a remote node right before we added a replica on that node. However,
+// preemptive snapshots came with all sorts of complexity that we're delighted
+// to be rid of. They have to stay around for clusters with mixed 19.1 and 19.2
+// nodes, but after 19.2, we can remove them entirely.
+//
+// [2]: The largest class of rejections here is if the store contains a replica
+// that overlaps the snapshot but has a different id (we maintain an invariant
+// that replicas on a store never overlap). This usually happens when the
+// recipient has an old copy of a replica that is no longer part of a range and
+// the `replicaGCQueue` hasn't gotten around to collecting it yet. So if this
+// happens, `shouldAcceptSnapshotData` will queue it up for consideration.
+//
+// [3]: A uninitialized replica is created when a replica that's being added
+// gets traffic from its new peers before it gets a snapshot. It may be possible
+// to get rid of uninitialized replicas (by dropping all Raft traffic except
+// votes on the floor), but this is a cleanup that hasn't happened yet.
+//
+// [4]: The placeholder is essentially a snapshot lock, making any future
+// callers of `shouldAcceptSnapshotData` return an error so that we no longer
+// have to worry about racing with a second snapshot. See the comment on
+// ReplicaPlaceholder for details.
 func (r *Replica) sendSnapshot(
 	ctx context.Context,
-	repDesc roachpb.ReplicaDescriptor,
+	recipient roachpb.ReplicaDescriptor,
 	snapType SnapshotRequest_Type,
 	priority SnapshotRequest_Priority,
 ) error {
@@ -1016,7 +1121,7 @@ func (r *Replica) sendSnapshot(
 	defer snap.Close()
 	log.Event(ctx, "generated snapshot")
 
-	fromRepDesc, err := r.GetReplicaDescriptor()
+	sender, err := r.GetReplicaDescriptor()
 	if err != nil {
 		return errors.Wrapf(err, "%s: change replicas failed", r)
 	}
@@ -1036,8 +1141,7 @@ func (r *Replica) sendSnapshot(
 	}
 
 	canAvoidSendingLog := !usesReplicatedTruncatedState &&
-		snap.State.TruncatedState.Index < snap.State.RaftAppliedIndex &&
-		r.store.ClusterSettings().Version.IsActive(cluster.VersionSnapshotsWithoutLog)
+		snap.State.TruncatedState.Index < snap.State.RaftAppliedIndex
 
 	if canAvoidSendingLog {
 		// If we're not using a legacy (replicated) truncated state, we avoid
@@ -1067,12 +1171,12 @@ func (r *Replica) sendSnapshot(
 		UnreplicatedTruncatedState: !usesReplicatedTruncatedState,
 		RaftMessageRequest: RaftMessageRequest{
 			RangeID:     r.RangeID,
-			FromReplica: fromRepDesc,
-			ToReplica:   repDesc,
+			FromReplica: sender,
+			ToReplica:   recipient,
 			Message: raftpb.Message{
 				Type:     raftpb.MsgSnap,
-				To:       uint64(repDesc.ReplicaID),
-				From:     uint64(fromRepDesc.ReplicaID),
+				To:       uint64(recipient.ReplicaID),
+				From:     uint64(sender.ReplicaID),
 				Term:     status.Term,
 				Snapshot: snap.RaftSnap,
 			},

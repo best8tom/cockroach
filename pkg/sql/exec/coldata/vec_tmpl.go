@@ -1,14 +1,12 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 // {{/*
 // +build execgen_template
@@ -39,208 +37,142 @@ const _TYPES_T = types.Unhandled
 
 // */}}
 
-func (m *memColumn) Append(vec Vec, colType types.T, toLength uint64, fromLength uint16) {
-	switch colType {
+func (m *memColumn) Append(args AppendArgs) {
+	switch args.ColType {
 	// {{range .}}
 	case _TYPES_T:
-		m.col = append(m._TemplateType()[:toLength], vec._TemplateType()[:fromLength]...)
-		// {{end}}
-	default:
-		panic(fmt.Sprintf("unhandled type %d", colType))
-	}
-
-	if fromLength > 0 {
-		m.nulls.Extend(vec.Nulls(), toLength, 0 /* srcStartIdx */, fromLength)
-	}
-}
-
-func (m *memColumn) AppendSlice(
-	vec Vec, colType types.T, destStartIdx uint64, srcStartIdx uint16, srcEndIdx uint16,
-) {
-	batchSize := srcEndIdx - srcStartIdx
-	outputLen := destStartIdx + uint64(batchSize)
-
-	switch colType {
-	// {{range .}}
-	case _TYPES_T:
-		if outputLen > uint64(len(m._TemplateType())) {
-			m.col = append(m._TemplateType()[:destStartIdx], vec._TemplateType()[srcStartIdx:srcEndIdx]...)
+		fromCol := args.Src._TemplateType()
+		toCol := m._TemplateType()
+		numToAppend := args.SrcEndIdx - args.SrcStartIdx
+		if args.Sel == nil {
+			toCol = append(toCol[:args.DestIdx], fromCol[args.SrcStartIdx:args.SrcEndIdx]...)
+			m.nulls.Extend(args.Src.Nulls(), args.DestIdx, args.SrcStartIdx, numToAppend)
 		} else {
-			copy(m._TemplateType()[destStartIdx:], vec._TemplateType()[srcStartIdx:srcEndIdx])
+			sel := args.Sel[args.SrcStartIdx:args.SrcEndIdx]
+			appendVals := make([]_GOTYPE, len(sel))
+			for i, selIdx := range sel {
+				appendVals[i] = fromCol[selIdx]
+			}
+			toCol = append(toCol[:args.DestIdx], appendVals...)
+			// TODO(asubiotto): Change Extend* signatures to allow callers to pass in
+			// SrcEndIdx instead of numToAppend.
+			m.nulls.ExtendWithSel(args.Src.Nulls(), args.DestIdx, args.SrcStartIdx, numToAppend, args.Sel)
 		}
-	// {{end}}
-	default:
-		panic(fmt.Sprintf("unhandled type %d", colType))
-	}
-
-	m.nulls.Extend(vec.Nulls(), destStartIdx, srcStartIdx, batchSize)
-}
-
-func (m *memColumn) AppendWithSel(
-	vec Vec, sel []uint16, batchSize uint16, colType types.T, toLength uint64,
-) {
-	switch colType {
-	// {{range .}}
-	case _TYPES_T:
-		toCol := append(m._TemplateType()[:toLength], make([]_GOTYPE, batchSize)...)
-		fromCol := vec._TemplateType()
-
-		for i := uint16(0); i < batchSize; i++ {
-			toCol[uint64(i)+toLength] = fromCol[sel[i]]
-		}
-
-		m.col = toCol
-		// {{end}}
-	default:
-		panic(fmt.Sprintf("unhandled type %d", colType))
-	}
-
-	if batchSize > 0 {
-		m.nulls.ExtendWithSel(vec.Nulls(), toLength, 0 /* srcStartIdx */, batchSize, sel)
-	}
-}
-
-func (m *memColumn) AppendSliceWithSel(
-	vec Vec, colType types.T, destStartIdx uint64, srcStartIdx uint16, srcEndIdx uint16, sel []uint16,
-) {
-	batchSize := srcEndIdx - srcStartIdx
-	switch colType {
-	// {{range .}}
-	case _TYPES_T:
-		toCol := append(m._TemplateType()[:destStartIdx], make([]_GOTYPE, batchSize)...)
-		fromCol := vec._TemplateType()
-
-		for i := 0; i < int(batchSize); i++ {
-			toCol[uint64(i)+destStartIdx] = fromCol[sel[i+int(srcStartIdx)]]
-		}
-
 		m.col = toCol
 	// {{end}}
 	default:
-		panic(fmt.Sprintf("unhandled type %d", colType))
-	}
-
-	m.nulls.ExtendWithSel(vec.Nulls(), destStartIdx, srcStartIdx, batchSize, sel)
-}
-
-func (m *memColumn) Copy(src Vec, srcStartIdx, srcEndIdx uint64, typ types.T) {
-	m.CopyAt(src, 0, srcStartIdx, srcEndIdx, typ)
-}
-
-func (m *memColumn) CopyAt(src Vec, destStartIdx, srcStartIdx, srcEndIdx uint64, typ types.T) {
-	switch typ {
-	// {{range .}}
-	case _TYPES_T:
-		copy(m._TemplateType()[destStartIdx:], src._TemplateType()[srcStartIdx:srcEndIdx])
-		// TODO(asubiotto): Improve this, there are cases where we don't need to
-		// allocate a new bitmap.
-		srcBitmap := src.Nulls().NullBitmap()
-		m.nulls.nulls = make([]byte, len(srcBitmap))
-		if src.HasNulls() {
-			m.nulls.hasNulls = true
-			copy(m.nulls.nulls, srcBitmap)
-		} else {
-			m.nulls.UnsetNulls()
-		}
-	// {{end}}
-	default:
-		panic(fmt.Sprintf("unhandled type %d", typ))
+		panic(fmt.Sprintf("unhandled type %s", args.ColType))
 	}
 }
 
-func (m *memColumn) CopyWithSelInt64(vec Vec, sel []uint64, nSel uint16, colType types.T) {
-	m.nulls.UnsetNulls()
+func (m *memColumn) Copy(args CopyArgs) {
+	if args.DestIdx != 0 && m.HasNulls() {
+		panic("copying to non-zero dest index with nulls is not implemented yet (would overwrite nulls)")
+	}
+	if args.Nils != nil && args.Sel64 == nil {
+		panic("Nils set without Sel64")
+	}
+	// TODO(asubiotto): This is extremely wrong (we might be overwriting nulls
+	// past the end of where we are copying to that should be left alone).
+	// Previous code did this though so we won't be introducing new problems. We
+	// really have to fix and test this.
+	m.Nulls().UnsetNulls()
 
-	// todo (changangela): handle the case when nSel > BatchSize
-	switch colType {
+	switch args.ColType {
 	// {{range .}}
 	case _TYPES_T:
+		fromCol := args.Src._TemplateType()
 		toCol := m._TemplateType()
-		fromCol := vec._TemplateType()
-
-		if vec.HasNulls() {
-			for i := uint16(0); i < nSel; i++ {
-				if vec.Nulls().NullAt64(sel[i]) {
-					m.nulls.SetNull(i)
-				} else {
-					toCol[i] = fromCol[sel[i]]
+		if args.Sel64 != nil {
+			sel := args.Sel64
+			// TODO(asubiotto): Template this and the uint16 case below.
+			if args.Nils != nil {
+				if args.Src.HasNulls() {
+					nulls := args.Src.Nulls()
+					toColSliced := toCol[args.DestIdx:]
+					for i, selIdx := range sel[args.SrcStartIdx:args.SrcEndIdx] {
+						if args.Nils[i] || nulls.NullAt64(selIdx) {
+							m.nulls.SetNull64(uint64(i) + args.DestIdx)
+						} else {
+							toColSliced[i] = fromCol[selIdx]
+						}
+					}
+					return
 				}
-			}
-		} else {
-			for i := uint16(0); i < nSel; i++ {
-				toCol[i] = fromCol[sel[i]]
-			}
-		}
-		// {{end}}
-	default:
-		panic(fmt.Sprintf("unhandled type %d", colType))
-	}
-}
-
-func (m *memColumn) CopyWithSelInt16(vec Vec, sel []uint16, nSel uint16, colType types.T) {
-	m.nulls.UnsetNulls()
-
-	switch colType {
-	// {{range .}}
-	case _TYPES_T:
-		toCol := m._TemplateType()
-		fromCol := vec._TemplateType()
-
-		if vec.HasNulls() {
-			for i := uint16(0); i < nSel; i++ {
-				if vec.Nulls().NullAt(sel[i]) {
-					m.nulls.SetNull(i)
-				} else {
-					toCol[i] = fromCol[sel[i]]
-				}
-			}
-		} else {
-			for i := uint16(0); i < nSel; i++ {
-				toCol[i] = fromCol[sel[i]]
-			}
-		}
-		// {{end}}
-	default:
-		panic(fmt.Sprintf("unhandled type %d", colType))
-	}
-}
-
-func (m *memColumn) CopyWithSelAndNilsInt64(
-	vec Vec, sel []uint64, nSel uint16, nils []bool, colType types.T,
-) {
-	m.nulls.UnsetNulls()
-
-	switch colType {
-	// {{range .}}
-	case _TYPES_T:
-		toCol := m._TemplateType()
-		fromCol := vec._TemplateType()
-
-		if vec.HasNulls() {
-			// TODO(jordan): copy the null arrays in batch.
-			for i := uint16(0); i < nSel; i++ {
-				if nils[i] {
-					m.nulls.SetNull(i)
-				} else {
-					if vec.Nulls().NullAt64(sel[i]) {
-						m.nulls.SetNull(i)
+				// Nils but no Nulls.
+				toColSliced := toCol[args.DestIdx:]
+				for i, selIdx := range sel[args.SrcStartIdx:args.SrcEndIdx] {
+					if args.Nils[i] {
+						m.nulls.SetNull64(uint64(i) + args.DestIdx)
 					} else {
-						toCol[i] = fromCol[sel[i]]
+						toColSliced[i] = fromCol[selIdx]
+					}
+				}
+				return
+			}
+			// No Nils.
+			if args.Src.HasNulls() {
+				nulls := args.Src.Nulls()
+				toColSliced := toCol[args.DestIdx:]
+				for i, selIdx := range sel[args.SrcStartIdx:args.SrcEndIdx] {
+					if nulls.NullAt64(selIdx) {
+						m.nulls.SetNull64(uint64(i) + args.DestIdx)
+					} else {
+						toColSliced[i] = fromCol[selIdx]
+					}
+				}
+				return
+			}
+			// No Nils or Nulls.
+			toColSliced := toCol[args.DestIdx:]
+			for i, selIdx := range sel[args.SrcStartIdx:args.SrcEndIdx] {
+				toColSliced[i] = fromCol[selIdx]
+			}
+			return
+		} else if args.Sel != nil {
+			sel := args.Sel
+			if args.Src.HasNulls() {
+				nulls := args.Src.Nulls()
+				toColSliced := toCol[args.DestIdx:]
+				for i, selIdx := range sel[args.SrcStartIdx:args.SrcEndIdx] {
+					if nulls.NullAt64(uint64(selIdx)) {
+						m.nulls.SetNull64(uint64(i) + args.DestIdx)
+					} else {
+						toColSliced[i] = fromCol[selIdx]
+					}
+				}
+				return
+			}
+			// No Nulls.
+			toColSliced := toCol[args.DestIdx:]
+			for i, selIdx := range sel[args.SrcStartIdx:args.SrcEndIdx] {
+				toColSliced[i] = fromCol[selIdx]
+			}
+			return
+		}
+		// No Sel or Sel64.
+		copy(toCol[args.DestIdx:], fromCol[args.SrcStartIdx:args.SrcEndIdx])
+		// We do not check for existence of nulls in m due to forcibly unsetting
+		// the bitmap at the start.
+		if args.Src.HasNulls() {
+			m.nulls.hasNulls = true
+			if args.DestIdx == 0 && args.SrcStartIdx == 0 {
+				// We can copy this bitmap indiscriminately.
+				copy(m.nulls.nulls, args.Src.Nulls().NullBitmap())
+			} else {
+				// TODO(asubiotto): This should use Extend but Extend only takes uint16
+				// arguments.
+				srcNulls := args.Src.Nulls()
+				for curDestIdx, curSrcIdx := args.DestIdx, args.SrcStartIdx; curSrcIdx < args.SrcEndIdx; curDestIdx, curSrcIdx = curDestIdx+1, curSrcIdx+1 {
+					if srcNulls.NullAt64(curSrcIdx) {
+						m.nulls.SetNull64(curDestIdx)
 					}
 				}
 			}
-		} else {
-			for i := uint16(0); i < nSel; i++ {
-				if nils[i] {
-					m.nulls.SetNull(i)
-				} else {
-					toCol[i] = fromCol[sel[i]]
-				}
-			}
 		}
 	// {{end}}
 	default:
-		panic(fmt.Sprintf("unhandled type %d", colType))
+		panic(fmt.Sprintf("unhandled type %s", args.ColType))
 	}
 }
 

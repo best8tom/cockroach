@@ -1,14 +1,12 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 syntax = "proto2";
 package cockroach.roachpb;
@@ -427,7 +425,13 @@ message IntegerOverflowError {
 message MixedSuccessError {
   option (gogoproto.equal) = true;
 
-  optional Error wrapped = 1;
+  // wrapped is set when the mixed success error is wrapping a
+  // structured ErrorDetail.
+  optional ErrorDetail wrapped = 1 [(gogoproto.nullable) = false];
+  // wrapped_message is only set if wrapped is unset (i.e. if the
+  // mixed success error is wrapping an error that is not a structured
+  // ErrorDetail).
+  optional string wrapped_message = 2 [(gogoproto.nullable) = false];
 }
 
 // A BatchTimestampBeforeGCError indicates that a request's timestamp was

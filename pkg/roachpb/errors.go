@@ -1,19 +1,18 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package roachpb
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -52,45 +51,13 @@ type transactionRestartError interface {
 	canRestartTransaction() TransactionRestart
 }
 
-// GetDetail returns an error detail associated with the error.
-func (e *Error) GetDetail() ErrorDetailInterface {
-	if e == nil {
-		return nil
-	}
-	if err, ok := e.Detail.GetInner().(ErrorDetailInterface); ok {
-		return err
-	}
-	// Unknown error detail; return the generic error.
-	return (*internalError)(e)
-}
-
 // NewError creates an Error from the given error.
 func NewError(err error) *Error {
 	if err == nil {
 		return nil
 	}
 	e := &Error{}
-	if intErr, ok := err.(*internalError); ok {
-		*e = *(*Error)(intErr)
-	} else {
-		if sErr, ok := err.(ErrorDetailInterface); ok {
-			e.Message = sErr.message(e)
-		} else {
-			e.Message = err.Error()
-		}
-		var isTxnError bool
-		if r, ok := err.(transactionRestartError); ok {
-			isTxnError = true
-			e.TransactionRestart = r.canRestartTransaction()
-		}
-		// If the specific error type exists in the detail union, set it.
-		if !e.Detail.SetInner(err) {
-			if _, isInternalError := err.(*internalError); !isInternalError && isTxnError {
-				panic(fmt.Sprintf("transactionRestartError %T must be an ErrorDetail", err))
-			}
-		}
-	}
-
+	e.SetDetail(err)
 	return e
 }
 
@@ -158,6 +125,45 @@ func (e *Error) GoError() error {
 	return e.GetDetail()
 }
 
+// SetDetail sets the error detail for the error. The argument cannot be nil.
+func (e *Error) SetDetail(err error) {
+	if err == nil {
+		panic("nil err argument")
+	}
+	if intErr, ok := err.(*internalError); ok {
+		*e = *(*Error)(intErr)
+	} else {
+		if sErr, ok := err.(ErrorDetailInterface); ok {
+			e.Message = sErr.message(e)
+		} else {
+			e.Message = err.Error()
+		}
+		var isTxnError bool
+		if r, ok := err.(transactionRestartError); ok {
+			isTxnError = true
+			e.TransactionRestart = r.canRestartTransaction()
+		}
+		// If the specific error type exists in the detail union, set it.
+		if !e.Detail.SetInner(err) {
+			if _, isInternalError := err.(*internalError); !isInternalError && isTxnError {
+				panic(fmt.Sprintf("transactionRestartError %T must be an ErrorDetail", err))
+			}
+		}
+	}
+}
+
+// GetDetail returns an error detail associated with the error.
+func (e *Error) GetDetail() ErrorDetailInterface {
+	if e == nil {
+		return nil
+	}
+	if err, ok := e.Detail.GetInner().(ErrorDetailInterface); ok {
+		return err
+	}
+	// Unknown error detail; return the generic error.
+	return (*internalError)(e)
+}
+
 // SetTxn sets the txn and resets the error message. txn is cloned before being
 // stored in the Error.
 func (e *Error) SetTxn(txn *Transaction) {
@@ -185,7 +191,7 @@ func (e *Error) UpdateTxn(o *Transaction) {
 		return
 	}
 	if e.UnexposedTxn == nil {
-		e.UnexposedTxn = o
+		e.UnexposedTxn = o.Clone()
 	} else {
 		e.UnexposedTxn.Update(o)
 	}
@@ -678,12 +684,36 @@ func (e *UnsupportedRequestError) message(_ *Error) string {
 
 var _ ErrorDetailInterface = &UnsupportedRequestError{}
 
+// WrapWithMixedSuccessError creates a new MixedSuccessError that wraps the
+// provided error detail. If the detail is already a MixedSuccessError then
+// no wrapping is performed.
+func WrapWithMixedSuccessError(detail error) *MixedSuccessError {
+	if m, ok := detail.(*MixedSuccessError); ok {
+		return m
+	}
+	var m MixedSuccessError
+	if !m.Wrapped.SetInner(detail) {
+		// If the detail was not an ErrorDetail, store
+		// it in the unstructured Message field.
+		m.WrappedMessage = detail.Error()
+	}
+	return &m
+}
+
+// GetWrapped returns the error that the MixedSuccessError wraps.
+func (e *MixedSuccessError) GetWrapped() error {
+	if w := e.Wrapped.GetInner(); w != nil {
+		return w
+	}
+	return errors.New(e.WrappedMessage)
+}
+
 func (e *MixedSuccessError) Error() string {
 	return e.message(nil)
 }
 
 func (e *MixedSuccessError) message(_ *Error) string {
-	return fmt.Sprintf("the batch experienced mixed success and failure: %s", e.Wrapped)
+	return fmt.Sprintf("the batch experienced mixed success and failure: %s", e.GetWrapped())
 }
 
 var _ ErrorDetailInterface = &MixedSuccessError{}

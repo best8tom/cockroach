@@ -1,14 +1,12 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package ssh
 
@@ -174,15 +172,6 @@ func NewSSHSession(user, host string) (*ssh.Session, error) {
 		}
 	}
 	return client.NewSession()
-}
-
-// IsSigKill TODO(peter): document
-func IsSigKill(err error) bool {
-	switch t := err.(type) {
-	case *ssh.ExitError:
-		return t.Signal() == string(ssh.SIGKILL)
-	}
-	return false
 }
 
 // ProgressWriter TODO(peter): document

@@ -1,14 +1,12 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 // +build lint
 
@@ -150,15 +148,13 @@ func TestLint(t *testing.T) {
 
 		bslHeader := regexp.MustCompile(`// Copyright 20\d\d The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 `)
 
 		cclHeader := regexp.MustCompile(`// Copyright 20\d\d The Cockroach Authors.
@@ -819,7 +815,7 @@ func TestLint(t *testing.T) {
 
 		if err := stream.ForEach(stream.Sequence(
 			filter,
-			stream.GrepNot(`(json|jsonpb|yaml|xml|protoutil|toml)\.Unmarshal\(`),
+			stream.GrepNot(`(json|jsonpb|yaml|xml|protoutil|toml|Codec)\.Unmarshal\(`),
 		), func(s string) {
 			t.Errorf("\n%s <- forbidden; use 'protoutil.Unmarshal' instead", s)
 		}); err != nil {
@@ -1397,7 +1393,6 @@ func TestLint(t *testing.T) {
 			stream.Sequence(
 				filter,
 				stream.GrepNot("sql/.*exported func .* returns unexported type sql.planNode"),
-				stream.GrepNot("struct field (XXX_NoUnkeyedLiteral|XXX_sizecache) should be"),
 				stream.GrepNot("pkg/sql/types/types.go.* var Uuid should be UUID"),
 			), func(s string) {
 				t.Errorf("\n%s", s)

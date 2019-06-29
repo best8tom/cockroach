@@ -1,14 +1,12 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package sql
 
@@ -22,7 +20,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/internal/client"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -264,8 +261,7 @@ func (n *setZoneConfigNode) startExec(params runParams) error {
 	// resolveSubzone determines the sub-parts of the zone
 	// specifier. This ought to succeed regardless of whether there is
 	// already a zone config.
-	index, partition, err := resolveSubzone(params.ctx, params.p.txn,
-		&n.zoneSpecifier, targetID, table)
+	index, partition, err := resolveSubzone(&n.zoneSpecifier, table)
 	if err != nil {
 		return err
 	}
@@ -460,15 +456,10 @@ func (n *setZoneConfigNode) startExec(params runParams) error {
 		}
 	}
 
-	// If cluster version is below 2.2, just write the complete zone
-	// config instead of the partial for backwards compatibility reasons.
-	// Otherwise write the partial zone configuration.
+	// Write the partial zone configuration.
 	hasNewSubzones := !deleteZone && index != nil
 	execConfig := params.extendedEvalCtx.ExecCfg
 	zoneToWrite := partialZone
-	if !execConfig.Settings.Version.IsActive(cluster.VersionCascadingZoneConfigs) {
-		zoneToWrite = completeZone
-	}
 
 	// Finally check for the extra protection partial zone configs would
 	// require from changes made to parent zones. The extra protections are:

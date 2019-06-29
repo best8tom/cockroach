@@ -1,14 +1,12 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package exec
 
@@ -22,10 +20,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 )
 
-// orderedSynchronizer receives rows from multiple inputs and produces a single
+// OrderedSynchronizer receives rows from multiple inputs and produces a single
 // stream of rows, ordered according to a set of columns. The rows in each input
 // stream are assumed to be ordered according to the same set of columns.
-type orderedSynchronizer struct {
+type OrderedSynchronizer struct {
 	inputs      []Operator
 	ordering    sqlbase.ColumnOrdering
 	columnTypes []types.T
@@ -39,7 +37,19 @@ type orderedSynchronizer struct {
 	output      coldata.Batch
 }
 
-func (o *orderedSynchronizer) Next(ctx context.Context) coldata.Batch {
+// NewOrderedSynchronizer creates a new OrderedSynchronizer.
+func NewOrderedSynchronizer(
+	inputs []Operator, typs []types.T, ordering sqlbase.ColumnOrdering,
+) *OrderedSynchronizer {
+	return &OrderedSynchronizer{
+		inputs:      inputs,
+		ordering:    ordering,
+		columnTypes: typs,
+	}
+}
+
+// Next is part of the Operator interface.
+func (o *OrderedSynchronizer) Next(ctx context.Context) coldata.Batch {
 	if o.inputBatches == nil {
 		o.inputBatches = make([]coldata.Batch, len(o.inputs))
 		for i := range o.inputs {
@@ -73,8 +83,15 @@ func (o *orderedSynchronizer) Next(ctx context.Context) coldata.Batch {
 			if sel := batch.Selection(); sel != nil {
 				srcStartIdx = sel[srcStartIdx]
 			}
-			o.output.ColVec(i).AppendSlice(
-				vec, o.columnTypes[i], uint64(outputIdx), srcStartIdx, srcStartIdx+1)
+			o.output.ColVec(i).Append(
+				coldata.AppendArgs{
+					ColType:     o.columnTypes[i],
+					Src:         vec,
+					DestIdx:     uint64(outputIdx),
+					SrcStartIdx: srcStartIdx,
+					SrcEndIdx:   srcStartIdx + 1,
+				},
+			)
 		}
 
 		// Advance the input batch, fetching a new batch if necessary.
@@ -92,7 +109,8 @@ func (o *orderedSynchronizer) Next(ctx context.Context) coldata.Batch {
 	return o.output
 }
 
-func (o *orderedSynchronizer) Init() {
+// Init is part of the Operator interface.
+func (o *OrderedSynchronizer) Init() {
 	o.inputIndices = make([]uint16, len(o.inputs))
 	o.output = coldata.NewMemBatch(o.columnTypes)
 	for i := range o.inputs {
@@ -105,7 +123,7 @@ func (o *orderedSynchronizer) Init() {
 	}
 }
 
-func (o *orderedSynchronizer) compareRow(batchIdx1 int, batchIdx2 int) int {
+func (o *OrderedSynchronizer) compareRow(batchIdx1 int, batchIdx2 int) int {
 	batch1 := o.inputBatches[batchIdx1]
 	batch2 := o.inputBatches[batchIdx2]
 	valIdx1 := o.inputIndices[batchIdx1]
@@ -135,7 +153,7 @@ func (o *orderedSynchronizer) compareRow(batchIdx1 int, batchIdx2 int) int {
 
 // updateComparators should be run whenever a new batch is fetched. It updates
 // all the relevant vectors in o.comparators.
-func (o *orderedSynchronizer) updateComparators(batchIdx int) {
+func (o *OrderedSynchronizer) updateComparators(batchIdx int) {
 	batch := o.inputBatches[batchIdx]
 	if batch.Length() == 0 {
 		return

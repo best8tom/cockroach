@@ -1,14 +1,12 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package distsqlrun
 
@@ -17,6 +15,7 @@ import (
 	"io"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/distsqlpb"
+	"github.com/cockroachdb/cockroach/pkg/sql/exec/colrpc"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlbase"
@@ -24,6 +23,60 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
 )
+
+type inboundStreamHandler interface {
+	// run is called once a FlowStream RPC is handled and a stream is obtained to
+	// make this stream accessible to the rest of the flow.
+	run(
+		ctx context.Context, stream distsqlpb.DistSQL_FlowStreamServer, firstMsg *distsqlpb.ProducerMessage, f *Flow,
+	) error
+	// timeout is called with an error, which results in the teardown of the
+	// stream strategy with the given error.
+	// WARNING: timeout may block.
+	timeout(err error)
+}
+
+type vectorizedInboundStreamHandler struct {
+	*colrpc.Inbox
+}
+
+var _ inboundStreamHandler = vectorizedInboundStreamHandler{}
+
+func (s vectorizedInboundStreamHandler) run(
+	ctx context.Context,
+	stream distsqlpb.DistSQL_FlowStreamServer,
+	_ *distsqlpb.ProducerMessage,
+	_ *Flow,
+) error {
+	return s.RunWithStream(ctx, stream)
+}
+
+func (s vectorizedInboundStreamHandler) timeout(err error) {
+	s.Timeout(err)
+}
+
+type rowInboundStreamHandler struct {
+	RowReceiver
+}
+
+var _ inboundStreamHandler = rowInboundStreamHandler{}
+
+func (s rowInboundStreamHandler) run(
+	ctx context.Context,
+	stream distsqlpb.DistSQL_FlowStreamServer,
+	firstMsg *distsqlpb.ProducerMessage,
+	f *Flow,
+) error {
+	return ProcessInboundStream(ctx, stream, firstMsg, s.RowReceiver, f)
+}
+
+func (s rowInboundStreamHandler) timeout(err error) {
+	s.Push(
+		nil, /* row */
+		&distsqlpb.ProducerMetadata{Err: err},
+	)
+	s.ProducerDone()
+}
 
 // ProcessInboundStream receives rows from a DistSQL_FlowStreamServer and sends
 // them to a RowReceiver. Optionally processes an initial StreamMessage that was

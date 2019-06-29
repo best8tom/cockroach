@@ -1,14 +1,12 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package exec
 
@@ -129,10 +127,9 @@ func NewOrderedAggregator(
 			)
 	}
 
-	groupTypes := extractGroupTypes(groupCols, colTypes)
 	aggTypes := extractAggTypes(aggCols, colTypes)
 
-	op, groupCol, err := OrderedDistinctColsToOperators(input, groupCols, groupTypes)
+	op, groupCol, err := OrderedDistinctColsToOperators(input, groupCols, colTypes)
 	if err != nil {
 		return nil, err
 	}
@@ -191,6 +188,8 @@ func makeAggregateFuncs(
 		case distsqlpb.AggregatorSpec_SUM, distsqlpb.AggregatorSpec_SUM_INT:
 			funcs[i], err = newSumAgg(aggTyps[i][0])
 		case distsqlpb.AggregatorSpec_COUNT_ROWS:
+			funcs[i] = newCountRowAgg()
+		case distsqlpb.AggregatorSpec_COUNT:
 			funcs[i] = newCountAgg()
 		case distsqlpb.AggregatorSpec_MIN:
 			funcs[i], err = newMinAgg(aggTyps[i][0])
@@ -202,7 +201,7 @@ func makeAggregateFuncs(
 
 		// Set the output type of the aggregate.
 		switch aggFns[i] {
-		case distsqlpb.AggregatorSpec_COUNT_ROWS:
+		case distsqlpb.AggregatorSpec_COUNT_ROWS, distsqlpb.AggregatorSpec_COUNT:
 			// TODO(jordan): this is a somewhat of a hack. The aggregate functions
 			// should come with their own output types, somehow.
 			outTyps[i] = types.Int64
@@ -248,8 +247,14 @@ func (a *orderedAggregator) Next(ctx context.Context) coldata.Batch {
 		for i := 0; i < len(a.outputTypes); i++ {
 			// According to the aggregate function interface contract, the value at
 			// the current index must also be copied.
-			a.scratch.ColVec(i).Copy(a.scratch.ColVec(i), uint64(a.scratch.outputSize),
-				uint64(a.scratch.resumeIdx+1), a.outputTypes[i])
+			a.scratch.ColVec(i).Copy(
+				coldata.CopyArgs{
+					Src:         a.scratch.ColVec(i),
+					ColType:     a.outputTypes[i],
+					SrcStartIdx: uint64(a.scratch.outputSize),
+					SrcEndIdx:   uint64(a.scratch.resumeIdx + 1),
+				},
+			)
 			a.aggregateFuncs[i].SetOutputIndex(newResumeIdx)
 		}
 		a.scratch.resumeIdx = newResumeIdx
@@ -296,19 +301,6 @@ func (a *orderedAggregator) reset() {
 	for _, fn := range a.aggregateFuncs {
 		fn.Reset()
 	}
-}
-
-// extractGroupTypes returns an array representing the type corresponding to
-// each group column. This information is extracted from the group column
-// indices and their corresponding column types.
-func extractGroupTypes(groupCols []uint32, colTypes []types.T) []types.T {
-	groupTyps := make([]types.T, len(groupCols))
-
-	for i, colIdx := range groupCols {
-		groupTyps[i] = colTypes[colIdx]
-	}
-
-	return groupTyps
 }
 
 // extractAggTypes returns a nested array representing the input types

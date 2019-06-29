@@ -1,14 +1,12 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package distsqlrun
 
@@ -147,6 +145,12 @@ type startable interface {
 	start(ctx context.Context, wg *sync.WaitGroup, ctxCancel context.CancelFunc)
 }
 
+type startableFn func(context.Context, *sync.WaitGroup, context.CancelFunc)
+
+func (f startableFn) start(ctx context.Context, wg *sync.WaitGroup, ctxCancel context.CancelFunc) {
+	f(ctx, wg, ctxCancel)
+}
+
 // Flow represents a flow which consists of processors and streams.
 type Flow struct {
 	FlowCtx
@@ -212,6 +216,19 @@ func newFlow(
 	return f
 }
 
+// checkInboundStreamID takes a stream ID and returns an error if an inbound
+// stream already exists with that ID in the inbound streams map, creating the
+// inbound streams map if it is nil.
+func (f *Flow) checkInboundStreamID(sid distsqlpb.StreamID) error {
+	if _, found := f.inboundStreams[sid]; found {
+		return errors.Errorf("inbound stream %d already exists in map", sid)
+	}
+	if f.inboundStreams == nil {
+		f.inboundStreams = make(map[distsqlpb.StreamID]*inboundStreamInfo)
+	}
+	return nil
+}
+
 // setupInboundStream adds a stream to the stream map (inboundStreams or
 // localStreams).
 func (f *Flow) setupInboundStream(
@@ -223,16 +240,13 @@ func (f *Flow) setupInboundStream(
 		return errors.Errorf("inbound stream of type SYNC_RESPONSE")
 
 	case distsqlpb.StreamEndpointSpec_REMOTE:
-		if _, found := f.inboundStreams[sid]; found {
-			return errors.Errorf("inbound stream %d has multiple consumers", sid)
-		}
-		if f.inboundStreams == nil {
-			f.inboundStreams = make(map[distsqlpb.StreamID]*inboundStreamInfo)
+		if err := f.checkInboundStreamID(sid); err != nil {
+			return err
 		}
 		if log.V(2) {
 			log.Infof(ctx, "set up inbound stream %d", sid)
 		}
-		f.inboundStreams[sid] = &inboundStreamInfo{receiver: receiver, waitGroup: &f.waitGroup}
+		f.inboundStreams[sid] = &inboundStreamInfo{receiver: rowInboundStreamHandler{receiver}, waitGroup: &f.waitGroup}
 
 	case distsqlpb.StreamEndpointSpec_LOCAL:
 		if _, found := f.localStreams[sid]; found {
@@ -482,12 +496,6 @@ func (f *Flow) setupProcessors(ctx context.Context, inputSyncs [][]RowSource) er
 func (f *Flow) setup(ctx context.Context, spec *distsqlpb.FlowSpec) error {
 	f.spec = spec
 
-	// First step: setup the input synchronizers for all processors.
-	inputSyncs, err := f.setupInputSyncs(ctx)
-	if err != nil {
-		return err
-	}
-
 	if f.EvalCtx.SessionData.Vectorize != sessiondata.VectorizeOff {
 		err := f.setupVectorized(ctx)
 		if err == nil {
@@ -495,6 +503,23 @@ func (f *Flow) setup(ctx context.Context, spec *distsqlpb.FlowSpec) error {
 			return nil
 		}
 		// Vectorization attempt failed with an error.
+		if f.spec.Gateway != f.nodeID {
+			// If we are not the gateway node, do not attempt to plan this with the
+			// row execution branch since there is no way to tell whether vectorized
+			// planning will succeed on any other node. Notify the gateway by
+			// returning an error.
+			log.VEventf(
+				ctx,
+				1,
+				"flow vectorization failed on remote node, returning error to gateway for possible replanning: %s", err,
+			)
+			return &VectorizedSetupError{cause: err}
+		}
+		// Reset state to be used by the row execution branch.
+		f.processors = nil
+		f.inboundStreams = nil
+		f.startables = nil
+
 		if f.EvalCtx.SessionData.Vectorize == sessiondata.VectorizeAlways {
 			// Only return the error if we are running a local planNode that is an
 			// exception to the rule that failures to set up a vectorized flow when
@@ -515,6 +540,12 @@ func (f *Flow) setup(ctx context.Context, spec *distsqlpb.FlowSpec) error {
 			}
 		}
 		log.VEventf(ctx, 1, "failed to vectorize: %s", err)
+	}
+
+	// First step: setup the input synchronizers for all processors.
+	inputSyncs, err := f.setupInputSyncs(ctx)
+	if err != nil {
+		return err
 	}
 
 	// Then, populate f.processors.
@@ -698,13 +729,10 @@ func (f *Flow) cancel() {
 	f.flowRegistry.Unlock()
 
 	for _, receiver := range timedOutReceivers {
-		go func(receiver RowReceiver) {
+		go func(receiver inboundStreamHandler) {
 			// Stream has yet to be started; send an error to its
 			// receiver and prevent it from being connected.
-			receiver.Push(
-				nil, /* row */
-				&distsqlpb.ProducerMetadata{Err: sqlbase.QueryCanceledError})
-			receiver.ProducerDone()
+			receiver.timeout(sqlbase.QueryCanceledError)
 		}(receiver)
 	}
 }

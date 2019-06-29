@@ -1,19 +1,18 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package colrpc
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/distsqlpb"
@@ -135,4 +134,33 @@ func TestInboxNextPanicDoesntLeakGoroutines(t *testing.T) {
 	// We require no error from the stream handler as nothing was canceled. The
 	// panic is bubbled up through the Next chain on the Inbox's host.
 	require.NoError(t, <-streamHandlerErrCh)
+}
+
+func TestInboxTimeout(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+
+	inbox, err := NewInbox([]types.T{types.Int64})
+	require.NoError(t, err)
+
+	var (
+		ctx         = context.Background()
+		readerErrCh = make(chan error)
+		rpcLayer    = makeMockFlowStreamRPCLayer()
+	)
+	go func() {
+		readerErrCh <- exec.CatchVectorizedRuntimeError(func() { inbox.Next(ctx) })
+	}()
+
+	// Timeout the inbox.
+	const timeoutErr = "timeout error"
+	inbox.Timeout(errors.New(timeoutErr))
+
+	// Ensure that the reader gets the error.
+	readerErr := <-readerErrCh
+	require.True(t, testutils.IsError(readerErr, timeoutErr), readerErr)
+
+	// And now the stream arrives.
+	streamHandlerErrCh := handleStream(ctx, inbox, rpcLayer.server, nil /* doneFn */)
+	streamErr := <-streamHandlerErrCh
+	require.True(t, testutils.IsError(streamErr, "stream arrived too late"), streamErr)
 }

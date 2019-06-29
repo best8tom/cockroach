@@ -1,14 +1,12 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package sql
 
@@ -74,14 +72,20 @@ func (p *planner) Unsplit(ctx context.Context, n *tree.Unsplit) (planNode, error
 			FROM
 				crdb_internal.ranges_no_leases
 			WHERE
-				table_name=$1::string AND index_name=$2::string AND split_enforced_until IS NOT NULL
+				database_name=$1::string AND table_name=$2::string AND index_name=$3::string AND split_enforced_until IS NOT NULL
 		`
-		ranges, err := p.ExtendedEvalContext().InternalExecutor.Query(
-			ctx, "split points query", p.txn, statement, n.TableOrIndex.Table.String(), n.TableOrIndex.Index)
+		dbDesc, err := sqlbase.GetDatabaseDescFromID(ctx, p.txn, tableDesc.ParentID)
 		if err != nil {
 			return nil, err
 		}
-		v := p.newContainerValuesNode(columns, 0)
+		ranges, err := p.ExtendedEvalContext().InternalExecutor.Query(
+			ctx, "split points query", p.txn, statement, dbDesc.Name, tableDesc.Name, n.TableOrIndex.Index)
+		if err != nil {
+			return nil, err
+		}
+		rawColumns := make(sqlbase.ResultColumns, 1)
+		rawColumns[0].Typ = types.Bytes
+		v := p.newContainerValuesNode(rawColumns, 0)
 		for _, d := range ranges {
 			if _, err := v.rows.AddRow(ctx, d); err != nil {
 				return nil, err
@@ -137,7 +141,7 @@ func (n *unsplitNode) startExec(params runParams) error {
 	if !stickyBitEnabled {
 		return pgerror.Newf(pgcode.ObjectNotInPrerequisiteState,
 			`UNSPLIT AT requires all nodes to be upgraded to %s`,
-			cluster.VersionByKey(cluster.VersionCreateStats),
+			cluster.VersionByKey(cluster.VersionStickyBit),
 		)
 	}
 	return nil

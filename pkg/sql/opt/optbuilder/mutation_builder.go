@@ -1,14 +1,12 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package optbuilder
 
@@ -190,8 +188,7 @@ func (mb *mutationBuilder) buildInputForUpdateOrDelete(
 
 	// FROM
 	mb.outScope = mb.b.buildScan(
-		mb.tab,
-		&mb.alias,
+		mb.b.addTable(mb.tab, &mb.alias),
 		nil, /* ordinals */
 		nil, /* indexFlags */
 		includeMutations,
@@ -745,7 +742,7 @@ func (mb *mutationBuilder) parseDefaultOrComputedExpr(colID opt.ColumnID) tree.E
 // buildFKChecks populates mb.checks with queries that check the integrity of
 // foreign key relations that involve modified rows.
 func (mb *mutationBuilder) buildFKChecks() {
-	if !mb.b.BuildFKChecks {
+	if !mb.b.evalCtx.SessionData.OptimizerFKs {
 		return
 	}
 
@@ -757,6 +754,11 @@ func (mb *mutationBuilder) buildFKChecks() {
 	for i, n := 0, mb.tab.OutboundForeignKeyCount(); i < n; i++ {
 		fk := mb.tab.OutboundForeignKey(i)
 		numCols := fk.ColumnCount()
+		item := memo.FKChecksItem{FKChecksItemPrivate: memo.FKChecksItemPrivate{
+			OriginTable: mb.tabID,
+			FKOutbound:  true,
+			FKOrdinal:   i,
+		}}
 
 		// Build an anti-join, with the origin FK columns on the left and the
 		// referenced columns on the right.
@@ -770,19 +772,19 @@ func (mb *mutationBuilder) buildFKChecks() {
 			refOrdinals[j] = fk.ReferencedColumnOrdinal(refTab.(cat.Table), j)
 		}
 
+		refTabMeta := mb.b.addTable(refTab.(cat.Table), refTab.Name())
+		item.ReferencedTable = refTabMeta.MetaID
 		scanScope := mb.b.buildScan(
-			refTab.(cat.Table),
-			refTab.Name(),
+			refTabMeta,
 			refOrdinals,
 			&tree.IndexFlags{IgnoreForeignKeys: true},
 			includeMutations,
 			mb.b.allocScope(),
 		)
 
-		antiJoinFilters := make(memo.FiltersExpr, numCols)
-
-		var originCols opt.ColSet
-		var nullableOriginCols opt.ColSet
+		inputProps := mb.outScope.expr.Relational()
+		inputCols := make(opt.ColList, numCols)
+		var notNullInputCols opt.ColSet
 		for j := 0; j < numCols; j++ {
 			ord := fk.OriginColumnOrdinal(mb.tab, j)
 			inputColID := mb.insertColID(ord)
@@ -791,17 +793,22 @@ func (mb *mutationBuilder) buildFKChecks() {
 				// columns.
 				panic(errors.AssertionFailedf("no value for FK column %d", ord))
 			}
-			originCols.Add(inputColID)
+			inputCols[j] = inputColID
 
 			// If a table column is not nullable, NULLs cannot be inserted (the
-			// mutation will fail).
-			if mb.tab.Column(ord).IsNullable() &&
-				!mb.outScope.expr.Relational().NotNullCols.Contains(inputColID) {
-				nullableOriginCols.Add(inputColID)
+			// mutation will fail). So for the purposes of FK checks, we can treat
+			// these columns as not null.
+			if inputProps.NotNullCols.Contains(inputColID) || !mb.tab.Column(ord).IsNullable() {
+				notNullInputCols.Add(inputColID)
 			}
+		}
 
+		// Build the join filters:
+		//   (origin_a = referenced_a) AND (origin_b = referenced_b) AND ...
+		antiJoinFilters := make(memo.FiltersExpr, numCols)
+		for j := 0; j < numCols; j++ {
 			antiJoinFilters[j].Condition = mb.b.factory.ConstructEq(
-				mb.b.factory.ConstructVariable(inputColID),
+				mb.b.factory.ConstructVariable(inputCols[j]),
 				mb.b.factory.ConstructVariable(scanScope.cols[j].id),
 			)
 		}
@@ -811,10 +818,12 @@ func (mb *mutationBuilder) buildFKChecks() {
 		// prototyping purposes (should work ok with constant inputs). Note that
 		// the column IDs in the FK check query aren't exposed by the ForeignKeys
 		// operator so using the same column IDs shouldn't cause issues.
-		left := mb.b.factory.ConstructProject(mb.outScope.expr,
-			memo.EmptyProjectionsExpr, originCols)
+		left := mb.b.factory.ConstructProject(
+			mb.outScope.expr, memo.EmptyProjectionsExpr, inputCols.ToSet(),
+		)
+		item.KeyCols = inputCols
 
-		if !nullableOriginCols.Empty() {
+		if notNullInputCols.Len() < numCols {
 			// The columns we are inserting might have NULLs. These require special
 			// handling, depending on the match method:
 			//  - MATCH SIMPLE: allows any column(s) to be NULL and the row doesn't
@@ -836,28 +845,31 @@ func (mb *mutationBuilder) buildFKChecks() {
 			case tree.MatchSimple:
 				// Filter out any rows which have a NULL; build filters of the form
 				//   (a IS NOT NULL) AND (b IS NOT NULL) ...
-				filters := make(memo.FiltersExpr, 0, nullableOriginCols.Len())
-				for col, ok := nullableOriginCols.Next(0); ok; col, ok = nullableOriginCols.Next(col + 1) {
-					filters = append(filters, memo.FiltersItem{
-						Condition: mb.b.factory.ConstructIsNot(
-							mb.b.factory.ConstructVariable(col),
-							memo.NullSingleton,
-						),
-					})
+				filters := make(memo.FiltersExpr, 0, numCols-notNullInputCols.Len())
+				for _, col := range inputCols {
+					if !notNullInputCols.Contains(col) {
+						filters = append(filters, memo.FiltersItem{
+							Condition: mb.b.factory.ConstructIsNot(
+								mb.b.factory.ConstructVariable(col),
+								memo.NullSingleton,
+							),
+						})
+					}
 				}
 				left = mb.b.factory.ConstructSelect(left, filters)
 
 			case tree.MatchFull:
 				// Filter out any rows which have NULLs on all referencing columns.
-				if !nullableOriginCols.Equals(originCols) {
+				if !notNullInputCols.Empty() {
 					// We statically know that some of the referencing columns can't be
-					// NULL. In this case, we don't need to filter anything.
+					// NULL. In this case, we don't need to filter anything (the case
+					// where all the origin columns are NULL is not possible).
 					break
 				}
 				// Build a filter of the form
 				//   (a IS NOT NULL) OR (b IS NOT NULL) ...
 				var condition opt.ScalarExpr
-				for col, ok := originCols.Next(0); ok; col, ok = originCols.Next(col + 1) {
+				for _, col := range inputCols {
 					is := mb.b.factory.ConstructIsNot(
 						mb.b.factory.ConstructVariable(col),
 						memo.NullSingleton,
@@ -875,11 +887,11 @@ func (mb *mutationBuilder) buildFKChecks() {
 			}
 		}
 
-		expr := mb.b.factory.ConstructAntiJoin(
+		item.Check = mb.b.factory.ConstructAntiJoin(
 			left, scanScope.expr, antiJoinFilters, &memo.JoinPrivate{},
 		)
 
-		mb.checks = append(mb.checks, memo.FKChecksItem{Check: expr})
+		mb.checks = append(mb.checks, item)
 	}
 }
 

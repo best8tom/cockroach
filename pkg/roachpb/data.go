@@ -1,14 +1,12 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package roachpb
 
@@ -1367,6 +1365,16 @@ func (l Lease) Equivalent(newL Lease) bool {
 	// Ignore sequence numbers, they are simply a reflection of
 	// the equivalency of other fields.
 	l.Sequence, newL.Sequence = 0, 0
+	// Ignore the ReplicaDescriptor's type. This shouldn't affect lease
+	// equivalency because Raft state shouldn't be factored into the state of a
+	// Replica's lease. We don't expect a leaseholder to ever become a LEARNER
+	// replica, but that also shouldn't prevent it from extending its lease. The
+	// code also avoids a potential bug where an unset ReplicaType and a set
+	// VOTER ReplicaType are considered distinct and non-equivalent.
+	//
+	// Change this line to the following when ReplicaType becomes non-nullable:
+	//  l.Replica.Type, newL.Replica.Type = 0, 0
+	l.Replica.Type, newL.Replica.Type = nil, nil
 	// If both leases are epoch-based, we must dereference the epochs
 	// and then set to nil.
 	switch l.Type() {

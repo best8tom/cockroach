@@ -1,14 +1,12 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package engine
 
@@ -31,7 +29,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
-	"github.com/cockroachdb/cockroach/pkg/storage/diskmap"
 	"github.com/cockroachdb/cockroach/pkg/storage/engine/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
@@ -3144,16 +3141,6 @@ func (r *RocksDB) LinkFile(oldname, newname string) error {
 		}
 	}
 	return nil
-}
-
-// NewSortedDiskMap implements the MapProvidingEngine interface.
-func (r *RocksDB) NewSortedDiskMap() diskmap.SortedDiskMap {
-	return NewRocksDBMap(r)
-}
-
-// NewSortedDiskMultiMap implements the MapProvidingEngine interface.
-func (r *RocksDB) NewSortedDiskMultiMap() diskmap.SortedDiskMap {
-	return NewRocksDBMultiMap(r)
 }
 
 // IsValidSplitKey returns whether the key is a valid split key. Certain key

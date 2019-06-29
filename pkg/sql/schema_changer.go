@@ -1,14 +1,12 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package sql
 
@@ -31,13 +29,17 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/security"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
+	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
+	"github.com/cockroachdb/cockroach/pkg/sql/row"
+	"github.com/cockroachdb/cockroach/pkg/sql/rowcontainer"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlbase"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlutil"
+	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/grpcutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -142,7 +144,9 @@ type SchemaChanger struct {
 	clock                *hlc.Clock
 	settings             *cluster.Settings
 	execCfg              *ExecutorConfig
-	ieFactory            sqlutil.SessionBoundInternalExecutorFactory
+	// Placeholder information used by CTAS execution in the SchemaChanger.
+	placeholders *tree.PlaceholderInfo
+	ieFactory    sqlutil.SessionBoundInternalExecutorFactory
 }
 
 // NewSchemaChangerForTesting only for tests.
@@ -567,6 +571,198 @@ func (sc *SchemaChanger) maybeDropTable(
 	return nil
 }
 
+// maybe backfill a created table by executing the AS query. Return nil if
+// successfully backfilled.
+func (sc *SchemaChanger) maybeBackfillCreateTableAs(
+	ctx context.Context,
+	table *sqlbase.TableDescriptor,
+	evalCtx *extendedEvalContext,
+	placeholders *tree.PlaceholderInfo,
+) error {
+	if table.Adding() && table.IsAs() {
+		if err := sc.db.Txn(ctx, func(ctx context.Context, txn *client.Txn) error {
+			txn.SetFixedTimestamp(ctx, table.CreateAsOfTime)
+
+			// Create an internal planner as the planner used to serve the user query
+			// would have committed by this point.
+			p, cleanup := NewInternalPlanner("ctasBackfill", txn, security.RootUser, &MemoryMetrics{}, sc.execCfg)
+			defer cleanup()
+			localPlanner := p.(*planner)
+			stmt, err := parser.ParseOne(table.CreateQuery)
+			if err != nil {
+				return err
+			}
+
+			// Construct an optimized logical plan of the AS source stmt.
+			// TODO(adityamaru): Design a way to fallback on the heuristic planner if
+			// the optimizer fails.
+			localPlanner.stmt = &Statement{Statement: stmt}
+			localPlanner.optPlanningCtx.init(localPlanner)
+
+			var result *planTop
+			localPlanner.runWithOptions(resolveFlags{skipCache: true}, func() {
+				result, _, err = localPlanner.makeOptimizerPlan(ctx)
+				if err == nil {
+					localPlanner.curPlan = *result
+				}
+			})
+
+			if err != nil {
+				return err
+			}
+			defer localPlanner.curPlan.close(ctx)
+
+			colTypes := make([]types.T, len(table.VisibleColumns()))
+			for i, t := range table.VisibleColumns() {
+				colTypes[i] = t.Type
+			}
+			ci := sqlbase.ColTypeInfoFromColTypes(colTypes)
+			rows := rowcontainer.NewRowContainer(
+				localPlanner.EvalContext().Mon.MakeBoundAccount(), ci, 0,
+			)
+			defer rows.Close(ctx)
+
+			rw := NewRowResultWriter(rows)
+			recv := MakeDistSQLReceiver(
+				ctx,
+				rw,
+				stmt.AST.StatementType(),
+				sc.execCfg.RangeDescriptorCache,
+				sc.execCfg.LeaseHolderCache,
+				txn,
+				func(ts hlc.Timestamp) {
+					_ = sc.clock.Update(ts)
+				},
+				evalCtx.Tracing,
+			)
+			defer recv.Release()
+
+			planCtx := sc.distSQLPlanner.NewPlanningCtx(ctx, localPlanner.ExtendedEvalContext(), txn)
+			rec, err := sc.distSQLPlanner.checkSupportForNode(localPlanner.curPlan.plan)
+			planCtx.isLocal = err != nil || rec == cannotDistribute
+			planCtx.planner = localPlanner
+			planCtx.stmtType = recv.stmtType
+
+			var planAndRunErr error
+			localPlanner.runWithOptions(resolveFlags{skipCache: true}, func() {
+				if len(localPlanner.curPlan.subqueryPlans) != 0 {
+					if !sc.distSQLPlanner.PlanAndRunSubqueries(
+						planCtx.ctx, localPlanner, localPlanner.ExtendedEvalContextCopy,
+						localPlanner.curPlan.subqueryPlans, recv, rec == canDistribute,
+					) {
+						if planAndRunErr = rw.Err(); err != nil {
+							return
+						}
+						if recv.commErr != nil {
+							planAndRunErr = recv.commErr
+							return
+						}
+					}
+				}
+				// Copy the evalCtx as it might be modified.
+				evalCtxCopy := localPlanner.ExtendedEvalContextCopy()
+
+				sc.distSQLPlanner.PlanAndRun(ctx, evalCtxCopy, planCtx, txn, localPlanner.curPlan.plan, recv)
+				if recv.commErr != nil {
+					planAndRunErr = recv.commErr
+					return
+				}
+				if rw.Err() != nil {
+					planAndRunErr = rw.Err()
+					return
+				}
+			})
+
+			if planAndRunErr != nil {
+				return planAndRunErr
+			}
+
+			// This is a very simplified version of the INSERT logic: no CHECK
+			// expressions, no FK checks, no arbitrary insertion order, no
+			// RETURNING, etc.
+
+			// Instantiate a row inserter and table writer.
+			ri, err := row.MakeInserter(
+				txn,
+				sqlbase.NewImmutableTableDescriptor(*table),
+				nil,
+				table.Columns,
+				row.SkipFKs,
+				&localPlanner.alloc)
+			if err != nil {
+				return err
+			}
+			ti := tableInserterPool.Get().(*tableInserter)
+			*ti = tableInserter{ri: ri}
+			tw := tableWriter(ti)
+			defer func() {
+				tw.close(ctx)
+				*ti = tableInserter{}
+				tableInserterPool.Put(ti)
+			}()
+			if err := tw.init(txn, localPlanner.EvalContext()); err != nil {
+				return err
+			}
+
+			// Prepare the buffer for row values. At this point, one more
+			// column has been added by ensurePrimaryKey() to the list of
+			// columns stored in table.Columns.
+			rowBuffer := make(tree.Datums, len(table.Columns))
+			pkColIdx := len(table.Columns) - 1
+
+			// The optimizer includes the rowID expression as part of the input
+			// expression. But the heuristic planner does not do this, so construct a
+			// rowID expression to be evaluated separately.
+			//
+			// TODO(adityamaru): This could be redundant as it is only required when
+			// the heuristic planner is used, but currently there is no way of knowing
+			// this from the SchemaChanger.
+			var defTypedExpr tree.TypedExpr
+			// Prepare the rowID expression.
+			defExprSQL := *table.Columns[pkColIdx].DefaultExpr
+			defExpr, err := parser.ParseExpr(defExprSQL)
+			if err != nil {
+				return err
+			}
+			defTypedExpr, err = localPlanner.analyzeExpr(
+				ctx,
+				defExpr,
+				nil, /*sources*/
+				tree.IndexedVarHelper{},
+				types.Any,
+				false, /*requireType*/
+				"CREATE TABLE AS")
+			if err != nil {
+				return err
+			}
+
+			for i := 0; i < rows.Len(); i++ {
+				copy(rowBuffer, rows.At(i))
+
+				rowBuffer[pkColIdx], err = defTypedExpr.Eval(localPlanner.EvalContext())
+				if err != nil {
+					return err
+				}
+
+				err := tw.row(ctx, rowBuffer, evalCtx.Tracing.KVTracingEnabled())
+				if err != nil {
+					return err
+				}
+			}
+
+			_, err = tw.finalize(
+				ctx, evalCtx.Tracing.KVTracingEnabled())
+			if err != nil {
+				return err
+			}
+			return rw.Err()
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // maybe make a table PUBLIC if it's in the ADD state.
 func (sc *SchemaChanger) maybeMakeAddTablePublic(
 	ctx context.Context, table *sqlbase.TableDescriptor,
@@ -822,6 +1018,10 @@ func (sc *SchemaChanger) exec(
 		return err
 	}
 
+	if err := sc.maybeBackfillCreateTableAs(ctx, tableDesc, evalCtx, sc.placeholders); err != nil {
+		return err
+	}
+
 	if err := sc.maybeMakeAddTablePublic(ctx, tableDesc); err != nil {
 		return err
 	}
@@ -849,7 +1049,8 @@ func (sc *SchemaChanger) exec(
 
 	if sc.mutationID == sqlbase.InvalidMutationID {
 		// Nothing more to do.
-		waitToUpdateLeases(false /* refreshStats */)
+		isCreateTableAs := tableDesc.Adding() && tableDesc.IsAs()
+		waitToUpdateLeases(isCreateTableAs /* refreshStats */)
 		return nil
 	}
 
@@ -1277,21 +1478,25 @@ func (sc *SchemaChanger) reverseMutations(ctx context.Context, causingError erro
 	if err != nil {
 		return err
 	}
+	tableIDsToUpdate := make([]sqlbase.ID, 0, len(fksByBackrefTable)+1)
+	tableIDsToUpdate = append(tableIDsToUpdate, sc.tableID)
+	for id := range fksByBackrefTable {
+		tableIDsToUpdate = append(tableIDsToUpdate, id)
+	}
 
-	// Create map of update closures for the table and all other tables with backreferences
-	updates := make(map[sqlbase.ID]func(descriptor *sqlbase.MutableTableDescriptor) error)
-	// All the mutations dropped by the reversal of the schema change.
-	// This is created by traversing the mutations list like a graph
-	// where the indexes refer columns. Whenever a column schema change
-	// is reversed, any index mutation referencing it is also reversed.
+	// Create update closure for the table and all other tables with backreferences
 	var droppedMutations map[sqlbase.MutationID]struct{}
-	updates[sc.tableID] = func(desc *sqlbase.MutableTableDescriptor) error {
+	update := func(descs map[sqlbase.ID]*sqlbase.MutableTableDescriptor) error {
+		scDesc, ok := descs[sc.tableID]
+		if !ok {
+			return errors.AssertionFailedf("required table with ID %d not provided to update closure", sc.tableID)
+		}
 		// Keep track of the column mutations being reversed so that indexes
 		// referencing them can be dropped.
 		columns := make(map[string]struct{})
 		droppedMutations = nil
 
-		for i, mutation := range desc.Mutations {
+		for i, mutation := range scDesc.Mutations {
 			if mutation.MutationID != sc.mutationID {
 				// Only reverse the first set of mutations if they have the
 				// mutation ID we're looking for.
@@ -1308,35 +1513,36 @@ func (sc *SchemaChanger) reverseMutations(ctx context.Context, causingError erro
 			}
 
 			log.Warningf(ctx, "reverse schema change mutation: %+v", mutation)
-			desc.Mutations[i], columns = sc.reverseMutation(mutation, false /*notStarted*/, columns)
+			scDesc.Mutations[i], columns = sc.reverseMutation(mutation, false /*notStarted*/, columns)
 
 			// If the mutation is for validating a constraint that is being added,
 			// drop the constraint because validation has failed
 			if constraint := mutation.GetConstraint(); constraint != nil &&
 				mutation.Direction == sqlbase.DescriptorMutation_ADD {
 				log.Warningf(ctx, "dropping constraint %+v", constraint)
-				if err := sc.maybeDropValidatingConstraint(ctx, desc, constraint); err != nil {
+				if err := sc.maybeDropValidatingConstraint(ctx, scDesc, constraint); err != nil {
 					return err
 				}
 				// Get the foreign key backreferences to remove, and remove them immediately if they're on the same table
 				if constraint.ConstraintType == sqlbase.ConstraintToUpdate_FOREIGN_KEY {
 					fk := &constraint.ForeignKey
-					if fk.Table == desc.ID {
-						if err := removeFKBackReferenceFromTable(desc, fk.Index, desc.ID, constraint.ForeignKeyIndex); err != nil {
-							return err
-						}
+					backrefTable, ok := descs[fk.Table]
+					if !ok {
+						return errors.AssertionFailedf("required table with ID %d not provided to update closure", sc.tableID)
+					}
+					if err := removeFKBackReferenceFromTable(backrefTable, fk.Index, sc.tableID, constraint.ForeignKeyIndex); err != nil {
+						return err
 					}
 				}
 			}
-
-			desc.Mutations[i].Rollback = true
+			scDesc.Mutations[i].Rollback = true
 		}
 
 		// Delete all mutations that reference any of the reversed columns
 		// by running a graph traversal of the mutations.
 		if len(columns) > 0 {
 			var err error
-			droppedMutations, err = sc.deleteIndexMutationsWithReversedColumns(ctx, desc, columns)
+			droppedMutations, err = sc.deleteIndexMutationsWithReversedColumns(ctx, scDesc, columns)
 			if err != nil {
 				return err
 			}
@@ -1345,18 +1551,8 @@ func (sc *SchemaChanger) reverseMutations(ctx context.Context, causingError erro
 		// PublishMultiple() will increment the version.
 		return nil
 	}
-	for id := range fksByBackrefTable {
-		updates[id] = func(desc *sqlbase.MutableTableDescriptor) error {
-			for _, c := range fksByBackrefTable[id] {
-				if err := removeFKBackReferenceFromTable(desc, c.ForeignKey.Index, sc.tableID, c.ForeignKeyIndex); err != nil {
-					return err
-				}
-			}
-			return nil
-		}
-	}
 
-	_, err = sc.leaseMgr.PublishMultiple(ctx, updates, func(txn *client.Txn) error {
+	_, err = sc.leaseMgr.PublishMultiple(ctx, tableIDsToUpdate, update, func(txn *client.Txn) error {
 		// Read the table descriptor from the store. The Version of the
 		// descriptor has already been incremented in the transaction and
 		// this descriptor can be modified without incrementing the version.
@@ -1504,6 +1700,9 @@ func (sc *SchemaChanger) maybeDropValidatingConstraint(
 ) error {
 	switch constraint.ConstraintType {
 	case sqlbase.ConstraintToUpdate_CHECK, sqlbase.ConstraintToUpdate_NOT_NULL:
+		if constraint.Check.Validity == sqlbase.ConstraintValidity_Unvalidated {
+			return nil
+		}
 		for j, c := range desc.Checks {
 			if c.Name == constraint.Check.Name {
 				desc.Checks = append(desc.Checks[:j], desc.Checks[j+1:]...)
@@ -1518,6 +1717,9 @@ func (sc *SchemaChanger) maybeDropValidatingConstraint(
 			)
 		}
 	case sqlbase.ConstraintToUpdate_FOREIGN_KEY:
+		if constraint.ForeignKey.Validity == sqlbase.ConstraintValidity_Unvalidated {
+			return nil
+		}
 		idx, err := desc.FindIndexByID(constraint.ForeignKeyIndex)
 		if err != nil {
 			return err
@@ -1671,9 +1873,9 @@ type SchemaChangerTestingKnobs struct {
 	// after setting the job status to validating.
 	RunBeforeIndexValidation func() error
 
-	// RunBeforeChecksValidation is called just before starting the checks validation,
+	// RunBeforeConstraintValidation is called just before starting the checks validation,
 	// after setting the job status to validating.
-	RunBeforeChecksValidation func() error
+	RunBeforeConstraintValidation func() error
 
 	// OldNamesDrainedNotification is called during a schema change,
 	// after all leases on the version of the descriptor with the old

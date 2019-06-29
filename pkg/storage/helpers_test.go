@@ -1,14 +1,12 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 // This file includes test-only helper methods added to types in
 // package storage. These methods are only linked in to tests in this
@@ -34,7 +32,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/storage/engine"
 	"github.com/cockroachdb/cockroach/pkg/storage/engine/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/storage/rditer"
-	"github.com/cockroachdb/cockroach/pkg/storage/storagebase"
 	"github.com/cockroachdb/cockroach/pkg/storage/storagepb"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -258,7 +255,7 @@ func (r *Replica) GetLastIndex() (uint64, error) {
 func (r *Replica) LastAssignedLeaseIndex() uint64 {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.mu.lastAssignedLeaseIndex
+	return r.mu.proposalBuf.LastAssignedLeaseIndexRLocked()
 }
 
 // SetQuotaPool allows the caller to set a replica's quota pool initialized to
@@ -275,7 +272,6 @@ func (r *Replica) InitQuotaPool(quota int64) {
 	}
 	r.mu.proposalQuota = newQuotaPool(quota)
 	r.mu.quotaReleaseQueue = nil
-	r.mu.commandSizes = make(map[storagebase.CmdIDKey]int)
 }
 
 // QuotaAvailable returns the quota available in the replica's quota pool. Only
@@ -296,12 +292,6 @@ func (r *Replica) IsFollowerActive(ctx context.Context, followerID roachpb.Repli
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.mu.lastUpdateTimes.isFollowerActive(ctx, followerID, timeutil.Now())
-}
-
-func (r *Replica) CommandSizesLen() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.mu.commandSizes)
 }
 
 // GetTSCacheHighWater returns the high water mark of the replica's timestamp

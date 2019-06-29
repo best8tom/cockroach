@@ -1,14 +1,12 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package sqlbase
 
@@ -333,6 +331,32 @@ func (desc *IndexDescriptor) RunOverAllColumns(fn func(id ColumnID) error) error
 	return nil
 }
 
+// FindPartitionByName searches this partitioning descriptor for a partition
+// whose name is the input and returns it, or nil if no match is found.
+func (desc *PartitioningDescriptor) FindPartitionByName(name string) *PartitioningDescriptor {
+	for _, l := range desc.List {
+		if l.Name == name {
+			return desc
+		}
+		if s := l.Subpartitioning.FindPartitionByName(name); s != nil {
+			return s
+		}
+	}
+	for _, r := range desc.Range {
+		if r.Name == name {
+			return desc
+		}
+	}
+	return nil
+
+}
+
+// FindPartitionByName searches this index descriptor for a partition whose name
+// is the input and returns it, or nil if no match is found.
+func (desc *IndexDescriptor) FindPartitionByName(name string) *PartitioningDescriptor {
+	return desc.Partitioning.FindPartitionByName(name)
+}
+
 // allocateName sets desc.Name to a value that is not EqualName to any
 // of tableDesc's indexes. allocateName roughly follows PostgreSQL's
 // convention for automatically-named indexes.
@@ -507,6 +531,12 @@ func (desc *TableDescriptor) IsTable() bool {
 // View resource rather than a Table.
 func (desc *TableDescriptor) IsView() bool {
 	return desc.ViewQuery != ""
+}
+
+// IsAs returns true if the TableDescriptor actually describes
+// a Table resource with an As source.
+func (desc *TableDescriptor) IsAs() bool {
+	return desc.CreateQuery != ""
 }
 
 // IsSequence returns true if the TableDescriptor actually describes a
@@ -1713,25 +1743,8 @@ func (desc *TableDescriptor) validatePartitioningDescriptor(
 func (desc *TableDescriptor) FindNonDropPartitionByName(
 	name string,
 ) (*PartitioningDescriptor, *IndexDescriptor, error) {
-	var find func(p PartitioningDescriptor) *PartitioningDescriptor
-	find = func(p PartitioningDescriptor) *PartitioningDescriptor {
-		for _, l := range p.List {
-			if l.Name == name {
-				return &p
-			}
-			if s := find(l.Subpartitioning); s != nil {
-				return s
-			}
-		}
-		for _, r := range p.Range {
-			if r.Name == name {
-				return &p
-			}
-		}
-		return nil
-	}
 	for _, idx := range desc.AllNonDropIndexes() {
-		if p := find(idx.Partitioning); p != nil {
+		if p := idx.FindPartitionByName(name); p != nil {
 			return p, idx, nil
 		}
 	}
@@ -2376,11 +2389,18 @@ func (desc *MutableTableDescriptor) MakeMutationComplete(m DescriptorMutation) e
 		case *DescriptorMutation_Constraint:
 			switch t.Constraint.ConstraintType {
 			case ConstraintToUpdate_CHECK:
-				for _, c := range desc.Checks {
-					if c.Name == t.Constraint.Name {
-						c.Validity = ConstraintValidity_Validated
-						break
+				switch t.Constraint.Check.Validity {
+				case ConstraintValidity_Unvalidated:
+					desc.Checks = append(desc.Checks, &t.Constraint.Check)
+				case ConstraintValidity_Validating:
+					for _, c := range desc.Checks {
+						if c.Name == t.Constraint.Name {
+							c.Validity = ConstraintValidity_Validated
+							break
+						}
 					}
+				default:
+					return errors.AssertionFailedf("invalid constraint validity state: %d", t.Constraint.Check.Validity)
 				}
 			case ConstraintToUpdate_FOREIGN_KEY:
 				idx, err := desc.FindIndexByID(t.Constraint.ForeignKeyIndex)
@@ -2416,10 +2436,8 @@ func (desc *MutableTableDescriptor) MakeMutationComplete(m DescriptorMutation) e
 	return nil
 }
 
-// AddCheckValidationMutation adds a check constraint validation mutation to desc.Mutations.
-func (desc *MutableTableDescriptor) AddCheckValidationMutation(
-	ck *TableDescriptor_CheckConstraint,
-) {
+// AddCheckMutation adds a check constraint mutation to desc.Mutations.
+func (desc *MutableTableDescriptor) AddCheckMutation(ck *TableDescriptor_CheckConstraint) {
 	m := DescriptorMutation{
 		Descriptor_: &DescriptorMutation_Constraint{
 			Constraint: &ConstraintToUpdate{

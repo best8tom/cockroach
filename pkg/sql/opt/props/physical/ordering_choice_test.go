@@ -1,14 +1,12 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package physical_test
 
@@ -501,6 +499,58 @@ func TestOrderingChoice_Equals(t *testing.T) {
 			} else {
 				t.Errorf("expected %s to not equal %s", tc.left, tc.right)
 			}
+		}
+	}
+}
+
+func TestOrderingChoice_PrefixIntersection(t *testing.T) {
+	testcases := []struct {
+		x        string
+		prefix   opt.ColList
+		y        string
+		expected string
+	}{
+		{x: "+1", prefix: opt.ColList{}, y: "+2", expected: "fail"},
+		{x: "", prefix: opt.ColList{}, y: "+1", expected: "+1"},
+		{x: "", prefix: opt.ColList{}, y: "+1,+2", expected: "+1,+2"},
+		{x: "+(1|2)", prefix: opt.ColList{}, y: "+(1|2)", expected: "+(1|2)"},
+		{x: "+(1|2)", prefix: opt.ColList{}, y: "+1", expected: "+1"},
+		{x: "+(1|2)", prefix: opt.ColList{}, y: "+2", expected: "+2"},
+		{x: "+1,+2", prefix: opt.ColList{3}, y: "", expected: "fail"},
+		{x: "", prefix: opt.ColList{3}, y: "+1,+2", expected: "+3,+1,+2"},
+		{x: "+1,+2", prefix: opt.ColList{3, 4}, y: "", expected: "fail"},
+		{x: "", prefix: opt.ColList{3, 4}, y: "+1,+2", expected: "+3,+4,+1,+2"},
+		{x: "+1", prefix: opt.ColList{}, y: "+1", expected: "+1"},
+		{x: "+1,+2", prefix: opt.ColList{}, y: "+1", expected: "+1,+2"},
+		{x: "+1", prefix: opt.ColList{}, y: "+1,+2", expected: "+1,+2"},
+		{x: "+1,+2", prefix: opt.ColList{}, y: "+1,+2", expected: "+1,+2"},
+		{x: "+1,+2", prefix: opt.ColList{1}, y: "+2", expected: "+1,+2"},
+		{x: "+2", prefix: opt.ColList{3}, y: "+1,+2", expected: "fail"},
+		{x: "+1,+2", prefix: opt.ColList{}, y: "+1,+2", expected: "+1,+2"},
+		{x: "+1,+2", prefix: opt.ColList{1}, y: "+2,+3", expected: "+1,+2,+3"},
+		{x: "+1,+2", prefix: opt.ColList{1, 2}, y: "+3", expected: "+1,+2,+3"},
+		{x: "+1,+2", prefix: opt.ColList{1, 2}, y: "", expected: "+1,+2"},
+		{x: "+2,+1", prefix: opt.ColList{1, 2}, y: "", expected: "+2,+1"},
+		{x: "+2,+3", prefix: opt.ColList{3}, y: "+1,+2", expected: "fail"},
+		{x: "", prefix: opt.ColList{1, 2}, y: "", expected: "+1,+2"},
+		{x: "", prefix: opt.ColList{2}, y: "+3 opt(2)", expected: "+2,+3"},
+		{x: "", prefix: opt.ColList{2}, y: "+3", expected: "+2,+3"},
+	}
+
+	for _, tc := range testcases {
+		left := physical.ParseOrderingChoice(tc.x)
+		right := physical.ParseOrderingChoice(tc.y)
+
+		cols := tc.prefix.ToSet()
+
+		result, ok := left.PrefixIntersection(cols, right.Columns)
+		s := "fail"
+		if ok {
+			s = result.String()
+		}
+
+		if s != tc.expected {
+			t.Errorf("%q.PrefixIntersection(%q, %q): expected %q, got %q", left, cols, right, tc.expected, s)
 		}
 	}
 }

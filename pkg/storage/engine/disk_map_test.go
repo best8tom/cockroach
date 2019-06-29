@@ -1,14 +1,12 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package engine
 
@@ -36,7 +34,7 @@ func TestRocksDBMap(t *testing.T) {
 	e := NewInMem(roachpb.Attributes{}, 1<<20)
 	defer e.Close()
 
-	diskMap := NewRocksDBMap(e)
+	diskMap := newRocksDBMap(e, false /* allowDuplicates */)
 	defer diskMap.Close(ctx)
 
 	batchWriter := diskMap.NewBatchWriterCapacity(64)
@@ -171,7 +169,7 @@ func TestRocksDBMapClose(t *testing.T) {
 		}
 	}
 
-	diskMap := NewRocksDBMap(e)
+	diskMap := newRocksDBMap(e, false /* allowDuplicates */)
 
 	// Put a small amount of data into the disk map.
 	const letters = "abcdefghijklmnopqrstuvwxyz"
@@ -224,9 +222,9 @@ func TestRocksDBMapSandbox(t *testing.T) {
 	e := NewInMem(roachpb.Attributes{}, 1<<20)
 	defer e.Close()
 
-	diskMaps := make([]*RocksDBMap, 3)
+	diskMaps := make([]*rocksDBMap, 3)
 	for i := 0; i < len(diskMaps); i++ {
-		diskMaps[i] = NewRocksDBMap(e)
+		diskMaps[i] = newRocksDBMap(e, false /* allowDuplicates */)
 	}
 
 	// Put [0,10) as a key into each diskMap with the value specifying which
@@ -342,11 +340,7 @@ func TestRocksDBStore(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(fmt.Sprintf("AllowDuplicates=%v", tc.allowDuplicates), func(t *testing.T) {
-			fn := NewRocksDBMap
-			if tc.allowDuplicates {
-				fn = NewRocksDBMultiMap
-			}
-			diskStore := fn(e)
+			diskStore := newRocksDBMap(e, tc.allowDuplicates)
 			defer diskStore.Close(ctx)
 
 			batchWriter := diskStore.NewBatchWriter()
@@ -406,7 +400,7 @@ func BenchmarkRocksDBMapWrite(b *testing.B) {
 		b.Run(fmt.Sprintf("InputSize%d", inputSize), func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				func() {
-					diskMap := NewRocksDBMap(tempEngine)
+					diskMap := tempEngine.NewSortedDiskMap()
 					defer diskMap.Close(ctx)
 					batchWriter := diskMap.NewBatchWriter()
 					// This Close() flushes writes.
@@ -447,7 +441,7 @@ func BenchmarkRocksDBMapIteration(b *testing.B) {
 	}
 	defer tempEngine.Close()
 
-	diskMap := NewRocksDBMap(tempEngine)
+	diskMap := tempEngine.NewSortedDiskMap()
 	defer diskMap.Close(context.Background())
 
 	rng := rand.New(rand.NewSource(timeutil.Now().UnixNano()))

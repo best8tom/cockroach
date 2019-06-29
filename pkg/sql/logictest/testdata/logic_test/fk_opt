@@ -1,0 +1,22 @@
+# LogicTest: local-opt fakedist-opt
+
+statement ok
+SET experimental_optimizer_foreign_keys = true
+
+statement ok
+CREATE TABLE parent (p INT PRIMARY KEY, other INT)
+
+statement ok
+CREATE TABLE child (c INT PRIMARY KEY, p INT NOT NULL REFERENCES parent(p))
+
+statement error insert or update on table "child" violates foreign key constraint "fk_p_ref_parent"\nDETAIL: Key \(p\)=\(1\) is not present in table "parent"\.
+INSERT INTO child VALUES (1,1)
+
+statement ok
+INSERT INTO parent VALUES (1), (2)
+
+statement error insert or update on table "child" violates foreign key constraint "fk_p_ref_parent"\nDETAIL: Key \(p\)=\(3\) is not present in table "parent"\.
+INSERT INTO child VALUES (1,1), (2,2), (3,3)
+
+statement ok
+INSERT INTO child VALUES (1,1), (2,2)

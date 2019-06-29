@@ -1,14 +1,12 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package roachpb
 
@@ -823,23 +821,32 @@ func TestLeaseEquivalence(t *testing.T) {
 	stasis1 := Lease{Replica: r1, Start: ts1, Epoch: 1, DeprecatedStartStasis: ts1.Clone()}
 	stasis2 := Lease{Replica: r1, Start: ts1, Epoch: 1, DeprecatedStartStasis: ts2.Clone()}
 
+	r1Voter, r1Learner := r1, r1
+	r1Voter.Type = newReplicaType(ReplicaType_VOTER)
+	r1Learner.Type = newReplicaType(ReplicaType_LEARNER)
+	epoch1Voter := Lease{Replica: r1Voter, Start: ts1, Epoch: 1}
+	epoch1Learner := Lease{Replica: r1Learner, Start: ts1, Epoch: 1}
+
 	testCases := []struct {
 		l, ol      Lease
 		expSuccess bool
 	}{
-		{epoch1, epoch1, true},        // same epoch lease
-		{expire1, expire1, true},      // same expiration lease
-		{epoch1, epoch2, false},       // different epoch leases
-		{epoch1, epoch2TS2, false},    // different epoch leases
-		{expire1, expire2TS2, false},  // different expiration leases
-		{expire1, expire2, true},      // same expiration lease, extended
-		{expire2, expire1, false},     // same expiration lease, extended but backwards
-		{epoch1, expire1, false},      // epoch and expiration leases
-		{expire1, epoch1, false},      // expiration and epoch leases
-		{proposed1, proposed1, true},  // exact leases with identical timestamps
-		{proposed1, proposed2, false}, // same proposed timestamps, but diff epochs
-		{proposed1, proposed3, true},  // different proposed timestamps, same lease
-		{stasis1, stasis2, true},      // same lease, different stasis timestamps
+		{epoch1, epoch1, true},             // same epoch lease
+		{expire1, expire1, true},           // same expiration lease
+		{epoch1, epoch2, false},            // different epoch leases
+		{epoch1, epoch2TS2, false},         // different epoch leases
+		{expire1, expire2TS2, false},       // different expiration leases
+		{expire1, expire2, true},           // same expiration lease, extended
+		{expire2, expire1, false},          // same expiration lease, extended but backwards
+		{epoch1, expire1, false},           // epoch and expiration leases
+		{expire1, epoch1, false},           // expiration and epoch leases
+		{proposed1, proposed1, true},       // exact leases with identical timestamps
+		{proposed1, proposed2, false},      // same proposed timestamps, but diff epochs
+		{proposed1, proposed3, true},       // different proposed timestamps, same lease
+		{stasis1, stasis2, true},           // same lease, different stasis timestamps
+		{epoch1, epoch1Voter, true},        // same epoch lease, different replica type
+		{epoch1, epoch1Learner, true},      // same epoch lease, different replica type
+		{epoch1Voter, epoch1Learner, true}, // same epoch lease, different replica type
 	}
 
 	for i, tc := range testCases {
@@ -880,16 +887,11 @@ func TestLeaseEqual(t *testing.T) {
 		ProposedTS            *hlc.Timestamp
 		Epoch                 int64
 		Sequence              LeaseSequence
-		XXX_NoUnkeyedLiteral  struct{}
-		XXX_sizecache         int32
 	}
 	// Verify that the lease structure does not change unexpectedly. If a compile
 	// error occurs on the following line of code, update the expectedLease
 	// structure AND update Lease.Equal.
 	var _ = expectedLease(Lease{})
-	// Appease the linter.
-	var _ = expectedLease{}.XXX_NoUnkeyedLiteral
-	var _ = expectedLease{}.XXX_sizecache
 
 	// Verify that nil == &hlc.Timestamp{} for the Expiration and
 	// DeprecatedStartStasis fields. See #19843.

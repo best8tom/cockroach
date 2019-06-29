@@ -1,14 +1,12 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package distsqlrun
 
@@ -226,7 +224,7 @@ func TestStreamConnectionTimeout(t *testing.T) {
 	wg := &sync.WaitGroup{}
 	wg.Add(1)
 	inboundStreams := map[distsqlpb.StreamID]*inboundStreamInfo{
-		streamID1: {receiver: consumer, waitGroup: wg},
+		streamID1: {receiver: rowInboundStreamHandler{consumer}, waitGroup: wg},
 	}
 	if err := reg.RegisterFlow(
 		context.TODO(), id1, f1, inboundStreams, jiffy,
@@ -323,7 +321,7 @@ func TestHandshake(t *testing.T) {
 				wg := &sync.WaitGroup{}
 				wg.Add(1)
 				inboundStreams := map[distsqlpb.StreamID]*inboundStreamInfo{
-					streamID: {receiver: consumer, waitGroup: wg},
+					streamID: {receiver: rowInboundStreamHandler{consumer}, waitGroup: wg},
 				}
 				if err := reg.RegisterFlow(
 					context.TODO(), flowID, f1, inboundStreams, time.Hour, /* timeout */
@@ -593,7 +591,7 @@ func TestInboundStreamTimeoutIsRetryable(t *testing.T) {
 	rc.initWithBufSizeAndNumSenders(sqlbase.OneIntCol, 1 /* chanBufSize */, 1 /* numSenders */)
 	inboundStreams := map[distsqlpb.StreamID]*inboundStreamInfo{
 		0: {
-			receiver:  rc,
+			receiver:  rowInboundStreamHandler{rc},
 			waitGroup: &wg,
 		},
 	}
@@ -636,7 +634,7 @@ func TestTimeoutPushDoesntBlockRegister(t *testing.T) {
 	wg.Add(1)
 	inboundStreams := map[distsqlpb.StreamID]*inboundStreamInfo{
 		0: {
-			receiver:  rc,
+			receiver:  rowInboundStreamHandler{rc},
 			waitGroup: &wg,
 		},
 	}
@@ -684,11 +682,11 @@ func TestFlowCancelPartiallyBlocked(t *testing.T) {
 	wgRight.Add(1)
 	inboundStreams := map[distsqlpb.StreamID]*inboundStreamInfo{
 		0: {
-			receiver:  left,
+			receiver:  rowInboundStreamHandler{left},
 			waitGroup: &wgLeft,
 		},
 		1: {
-			receiver:  right,
+			receiver:  rowInboundStreamHandler{right},
 			waitGroup: &wgRight,
 		},
 	}

@@ -1,14 +1,12 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License included
-// in the file licenses/BSL.txt and at www.mariadb.com/bsl11.
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
 //
-// Change Date: 2022-10-01
-//
-// On the date above, in accordance with the Business Source License, use
-// of this software will be governed by the Apache License, Version 2.0,
-// included in the file licenses/APL.txt and at
-// https://www.apache.org/licenses/LICENSE-2.0
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
 
 package storage
 
@@ -72,6 +70,18 @@ type ProposalData struct {
 	// command is serialized and proposed to raft. In the event of
 	// reproposals its MaxLeaseIndex field is mutated.
 	command *storagepb.RaftCommand
+
+	// encodedCommand is the encoded Raft command, with an optional prefix
+	// containing the command ID.
+	encodedCommand []byte
+
+	// quotaSize is the encoded size of command that was used to acquire
+	// proposal quota. command.Size can change slightly as the object is
+	// mutated, so it's safer to record the exact value used here.
+	quotaSize int64
+
+	// tmpFooter is used to avoid an allocation.
+	tmpFooter storagepb.RaftCommandFooter
 
 	// endCmds.finish is called after command execution to update the
 	// timestamp cache & release latches.
